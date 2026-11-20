@@ -205,6 +205,7 @@
         if (!contained(p, corners)) throw Error(label + ' 시작점이 수조 안에 있어야 합니다.');
       }
       const tracks = startTracks(await read(start), width, height, seeds, patch);
+      const history = [Object.fromEntries(Object.entries(seeds))];
       const steps = Math.max(2, Math.ceil((end - start) * 8));
       const search = Math.max(14, Math.min(24, patch * 2));
       for (let i = 1; i <= steps; i++) {
@@ -214,12 +215,28 @@
           break;
         }
         const seconds = start + (end - start) * (i / steps);
+        const previous = tracks.map(t => ({...t}));
         advance(await read(seconds), width, height, tracks, corners, search, i === steps);
+        // If a previously visible piece moved too far, bridge the interval through its midpoint.
+        if (tracks.some((t, j) => !t.found && previous[j].gap === 0 && t.template)) {
+          const bridge = previous.map(t => ({...t, velocity: t.velocity.map(v => v / 2)}));
+          advance(await read(seconds - (end - start) / steps / 2), width, height, bridge, corners, search, false);
+          const atMiddle = bridge.map(t => t.found);
+          advance(await read(seconds), width, height, bridge, corners, search, i === steps);
+          for (const [j, t] of tracks.entries()) {
+            const recovered = bridge[j];
+            if (t.found || previous[j].gap !== 0 || !atMiddle[j] || !recovered.found) continue;
+            if (tracks.some(other => other !== t && other.found && distance(other.center, recovered.center) < 6)) continue;
+            Object.assign(t, recovered, {missed: previous[j].missed, velocity: recovered.velocity.map(v => v * 2)});
+          }
+        }
+        if (reviewEnds) history.push(Object.fromEntries(tracks.filter(t => t.found).map(t =>
+          [t.label, [t.center[0] / width, t.center[1] / height]])));
         if (i % 4 === 0 || i === steps) progress(i, steps);
       }
       const ends = Object.fromEntries(tracks.filter(t => t.found).map(({label, center: [x, y]}) => [label, [x / width, y / height]]));
       const missing = tracks.filter(t => !t.found).map(t => t.label);
-      const manual = missing.length ? await reviewEnds({seconds: end, missing, ends}) : {};
+      const manual = missing.length && reviewEnds ? await reviewEnds({seconds: end, missing, ends, history, start, step: (end - start) / steps}) : {};
       const missingFrames = tracks.map(t => {
         const marked = Object.hasOwn(manual, t.label);
         const missed = t.missed - (marked && !t.found ? 1 : 0);
@@ -228,6 +245,7 @@
       return {
         end_seconds: end, samples: steps + 1,
         ends: {...ends, ...manual},
+        unresolved: missing.filter(label => !Object.hasOwn(manual, label)),
         min_score: Object.fromEntries(tracks.map(t => {
           const replacedOnlyMatch = t.found && t.missed === steps - 1 && Object.hasOwn(manual, t.label);
           return [t.label, replacedOnlyMatch ? null : t.minimum];

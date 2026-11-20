@@ -55,7 +55,10 @@
 <div id="track-correction" hidden>
 <p id="track-correction-help" role="status"></p>
 <div id="track-end-markers" class="media-line" aria-label="종료 위치 부유물 번호"></div>
-<button type="button" id="track-correct-continue">종료 위치 확인 · 생성기에 등록</button>
+<button type="button" id="track-replay">마지막 확인 장면부터 재생</button>
+<input type="range" id="track-review-time" aria-label="검토 시각" step="0.025">
+<button type="button" id="track-end-frame">종료 장면 보기</button>
+<button type="button" id="track-correct-continue">확인된 결과 저장</button>
 <button type="button" id="track-correct-cancel" class="secondary">추적 취소</button>
 </div>
 <div id="media-stage"><div id="media-view"></div><svg id="media-overlay" aria-hidden="true"></svg></div>
@@ -83,7 +86,8 @@
 <label title="처음 찍은 부유물 중심 주변에서 비교할 범위입니다.">추적 범위 <select id="track-patch"><option value="7">작게</option><option value="10" selected>보통</option><option value="15">크게</option></select></label>
 </div>
 <p>기준 프레임이 추적의 시작입니다. 고정 카메라로 촬영한 구간에서 부유물 12개, 수조, 진동원 중심을 지정하세요.</p>
-<button type="button" id="track-register">자동 추적 후 생성기에 등록</button>
+<label><input type="checkbox" id="track-review"> 미확정 조각을 저장 전에 영상으로 검토</label>
+<button type="button" id="track-register">자동 추적 · 결과 저장</button>
 <button type="button" id="track-cancel" class="secondary" hidden>추적 취소</button>
 <progress id="track-progress" max="100" hidden></progress>
 <p id="track-message" class="media-message" role="status"></p>
@@ -106,4 +110,4 @@ action('run',async()=>{const r=await api('runs',{method:'POST',headers:{'Content
 action('download',async()=>{const id=el('runs').value;if(!id)throw Error('저장된 분석이 없습니다.');const data=await api('runs/'+id);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='synthetic-'+id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);return '결과를 다운로드했습니다.'});
 </script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="/drive.js"></script><script src="/track-video.js?v=10"></script><script src="/media.js?v=10"></script></html>
+<script src="/drive.js"></script><script src="/track-video.js?v=11"></script><script src="/media.js?v=11"></script></html>

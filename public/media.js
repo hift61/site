@@ -511,6 +511,11 @@
     const p = [clamp((event.clientX - rect.left) / rect.width), clamp((event.clientY - rect.top) / rect.height)];
     if (state.correction) {
       const correction = state.correction;
+      if (Math.abs(state.media.currentTime - correction.seconds) > 0.005 || !state.media.paused) {
+        correction.message = '종료 위치를 수정하려면 종료 장면 보기를 누르세요.';
+        render();
+        return;
+      }
       const corners = state.marks.corners;
       const inside = corners.every(([ax, ay], i) => {
         const [bx, by] = corners[(i + 1) % corners.length];
@@ -614,7 +619,14 @@
       return;
     }
     if (s.correction) {
-      const {automatic, manual, selected} = s.correction;
+      const {automatic, manual, selected, seconds, history, start, step} = s.correction;
+      if (Math.abs(s.media.currentTime - seconds) > 0.005) {
+        const frame = history[Math.round((s.media.currentTime - start) / step)] ?? {};
+        for (const [label, point] of Object.entries(frame)) {
+          marker(point, label, label === selected ? '#fff087' : rgb[label[0]], label === selected);
+        }
+        return;
+      }
       for (const [label, point] of Object.entries({...automatic, ...manual})) {
         marker(point, label, Object.hasOwn(manual, label) ? '#fff087' : rgb[label[0]], label === selected);
       }
@@ -656,16 +668,16 @@
     el('track-correction').hidden = !correction;
     if (correction) {
       const pending = correction.missing.filter(label => !Object.hasOwn(correction.manual, label));
-      el('track-correct-continue').disabled = pending.length > 0 || s.media.seeking;
+      el('track-correct-continue').disabled = false;
+      el('track-review-time').value = s.media.currentTime;
       for (const button of el('track-end-markers').children) {
         const label = button.dataset.label;
         button.textContent = pending.includes(label) ? label + ' · 확인 필요' : label;
         button.classList.toggle('secondary', !pending.includes(label));
         button.setAttribute('aria-pressed', String(correction.selected === label));
       }
-      say('track-correction-help', correction.seconds.toFixed(3) + '초 · 종료 프레임 · ' +
-        (correction.message || (pending.length ? '남은 조각 ' + pending.length + '개. ' + correction.selected +
-          '의 중심을 클릭하세요.' : '표시를 확인한 뒤 생성기에 등록하세요. 번호를 누르면 위치를 다시 찍을 수 있습니다.')));
+      say('track-correction-help', s.media.currentTime.toFixed(2) + '초 · ' + correction.selected + ' · ' +
+        (correction.message || ('미확정 ' + pending.length + '개. 번호를 눌러 마지막 확인 위치를 본 뒤 재생하세요. 식별이 어려우면 그대로 저장하세요.')));
     }
     el('mark-tools').hidden = !locked || s.preview || !!correction;
     el('evaluation-save').hidden = !locked || s.preview || !!correction;
@@ -673,7 +685,7 @@
     el('tracking-controls').hidden = !locked || !s.video;
     el('track-register').disabled = !!saveCount || s.media.seeking || s.preview;
     el('track-preview').disabled = !!saveCount || (!s.preview && s.media.seeking);
-    for (const id of ['tank-length', 'tank-width', 'track-end', 'track-patch']) el(id).disabled = !!saveCount || s.preview;
+    for (const id of ['tank-length', 'tank-width', 'track-end', 'track-patch', 'track-review']) el(id).disabled = !!saveCount || s.preview;
     el('frame-actions').hidden = !s.video || !s.ready || !!correction;
     el('lock-frame').hidden = locked;
     el('lock-frame').disabled = s.media.seeking;
@@ -763,12 +775,13 @@
     body.replaceChildren();
     if (!s.registered) return;
     const {id, payload} = s.registered;
-    for (const [label, values] of Object.entries(payload.objects)) {
+    for (const label of labels) {
+      const values = payload.objects[label];
       const row = body.insertRow();
-      for (const cell of [label, values[0].toFixed(2), values[1].toFixed(3)]) row.insertCell().textContent = cell;
+      for (const cell of [label, values?.[0]?.toFixed(2) ?? '—', values?.[1]?.toFixed(3) ?? '미확정']) row.insertCell().textContent = cell;
     }
     const manualCount = Object.values(payload.tracking.manual_frames ?? {}).reduce((a, b) => a + b, 0);
-    say('track-message', id + ' · 생성기에 등록된 실측값' + (manualCount ? ' · 수동 표시 ' + manualCount + '건' : '') +
+    say('track-message', id + (payload.tracking.unresolved?.length ? ' · 부분 결과 저장 · 생성기 학습 제외' : ' · 생성기에 등록된 실측값') + (manualCount ? ' · 수동 표시 ' + manualCount + '건' : '') +
       (payload.energy === null ? ' · 에너지 미확정' : ' · 구동 전체 에너지 ' + payload.energy + ' Wh'));
   }
 
@@ -782,28 +795,46 @@
     render();
   }
 
-  function reviewEndpoints(s, signal, {seconds, missing, ends}) {
+  function lastSeen(s) {
+    const c = s.correction;
+    for (let i = c.history.length - 1; i >= 0; i--) {
+      if (c.history[i][c.selected]) return c.start + c.step * i;
+    }
+    return c.start;
+  }
+
+  function reviewEndpoints(s, signal, {seconds, missing, ends, history, start, step}) {
     return new Promise((resolve, reject) => {
       const abort = () => finish(null, Error('추적을 취소했습니다.'));
       const fail = () => finish(null, Error('보정할 영상 프레임을 열지 못했습니다.'));
       const finish = (positions, error) => {
         signal.removeEventListener('abort', abort);
         s.media.removeEventListener('error', fail);
+        s.media.removeEventListener('timeupdate', updateTime);
+        s.media.pause();
         if (error) reject(error);
         else resolve(positions);
       };
+      const updateTime = () => {
+        if (!s.correction) return;
+        if (s.media.currentTime >= seconds && !s.media.paused) {
+          s.media.pause();
+          s.media.currentTime = seconds;
+        }
+        render();
+      };
       if (signal.aborted) return abort();
-      const needsSeek = Math.abs(s.media.currentTime - seconds) > 0.0005;
-      s.correction = {seconds, missing, automatic: ends, manual: {}, selected: missing[0], message: '', finish};
+      s.media.addEventListener('timeupdate', updateTime);
+      s.correction = {seconds, missing, history, start, step, automatic: ends, manual: {}, selected: missing[0], message: '', finish};
       signal.addEventListener('abort', abort, {once: true});
       s.media.addEventListener('error', fail, {once: true});
-      if (needsSeek) {
-        try {
-          s.media.currentTime = seconds;
-        } catch {
-          fail();
-          return;
-        }
+      el('track-review-time').min = start;
+      el('track-review-time').max = seconds;
+      try {
+        s.media.currentTime = lastSeen(s);
+      } catch {
+        fail();
+        return;
       }
       say('track-message', '자동 분석 완료 · 종료 위치 확인 대기');
       render();
@@ -838,7 +869,7 @@
       const result = await window.waterfulTrackVideo({url: s.url, stream: s.item.storage_backend === 'r2',
         start: s.seconds, end: settings.end_seconds,
         seeds: s.marks.objects, corners: s.marks.corners, patch: Number(el('track-patch').value), signal: controller.signal,
-        reviewEnds: review => reviewEndpoints(s, controller.signal, review),
+        reviewEnds: el('track-review').checked ? review => reviewEndpoints(s, controller.signal, review) : null,
         progress: (done, total) => {
           progress.value = Math.round(100 * done / total);
           say('track-message', '부유물 12개 추적 중 · ' + progress.value + '%');
@@ -846,7 +877,10 @@
       });
       if (controller.signal.aborted) throw Error('추적을 취소했습니다.');
       cancel.hidden = true;
-      say('track-message', '생성기에 등록 중…');
+      if (result.unresolved.some(label => s.registered?.payload.objects[label])) {
+        throw Error('기존에 저장된 좌표 중 이번 분석에서 미확정된 항목이 있어 이전 결과를 보존했습니다. 영상 검토를 선택해 다시 확인할 수 있습니다.');
+      }
+      say('track-message', '추적 결과 저장 중…');
       s.registered = await api('media/' + s.item.id + '/register-tracking', post('POST', {...result, revision: s.item.revision}));
       showRegistration(s);
     } catch (error) {
@@ -873,7 +907,9 @@
     const endButton = button.cloneNode();
     endButton.onclick = () => {
       if (!session?.correction) return;
+      session.media.pause();
       session.correction.selected = label;
+      session.media.currentTime = lastSeen(session);
       session.correction.message = '';
       render();
     };
@@ -901,11 +937,26 @@
   el('track-register').onclick = runTracking;
   el('track-cancel').onclick = () => session?.tracker?.abort();
   el('track-correct-cancel').onclick = el('track-cancel').onclick;
+  el('track-replay').onclick = () => {
+    const s = session;
+    if (!s?.correction) return;
+    s.media.currentTime = Math.max(s.correction.start, lastSeen(s) - 0.5);
+    s.media.play().catch(() => say('track-correction-help', '슬라이더로 검토 시각을 조절하세요.'));
+  };
+  el('track-review-time').oninput = event => {
+    session.media.pause();
+    session.media.currentTime = Number(event.target.value);
+  };
+  el('track-end-frame').onclick = () => {
+    session.media.pause();
+    session.media.currentTime = session.correction.seconds;
+    session.correction.message = '확인한 조각의 중심을 클릭하거나 그대로 저장하세요.';
+    render();
+  };
   el('track-correct-continue').onclick = () => {
     const s = session;
-    if (!s?.correction || s.media.seeking) return;
-    const {automatic, manual, missing, finish} = s.correction;
-    if (missing.some(label => !Object.hasOwn(manual, label))) return;
+    if (!s?.correction) return;
+    const {automatic, manual, finish} = s.correction;
     const positions = Object.entries({...automatic, ...manual});
     const scale = Math.min(1, 800 / Math.max(s.width, s.height));
     for (const [i, [label, [x, y]]] of positions.entries()) {

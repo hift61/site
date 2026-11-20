@@ -374,23 +374,29 @@ def media_routes(db):
         samples = body.get('samples')
         ends = body.get('ends')
         quality = body.get('min_score')
+        unresolved = body.get('unresolved', [])
+        if not isinstance(unresolved, list) or not all(isinstance(v, str) and v in LABELS for v in unresolved):
+            raise BadRequest('미확정 번호를 확인하세요.')
+        unresolved = set(unresolved)
         manual = body.get('manual_frames', {})
         missing = body.get('missing_frames') if 'missing_frames' in body else {}
         if (not unit(end, 86400) or type(samples) is not int or not 3 <= samples <= 5000
                 or not isinstance(ends, dict) or not isinstance(manual, dict) or not set(manual) <= LABELS
                 or not isinstance(missing, dict) or not set(missing) <= LABELS
-                or not isinstance(quality, dict) or set(ends) != LABELS or set(quality) != LABELS
+                or not isinstance(quality, dict) or set(ends) != LABELS - unresolved or set(quality) != LABELS
                 or any(type(count) is not int or not 1 <= count < samples
                        for counts in (manual, missing) for count in counts.values())):
             raise BadRequest('부유물 12개의 추적 결과를 확인하세요.')
         for label, score in quality.items():
             without_auto = manual.get(label, 0) + missing.get(label, 0)
-            if without_auto >= samples or (without_auto == samples - 1 and (score is not None or label not in manual)):
+            if label in unresolved and (label in manual or not missing.get(label)):
+                raise BadRequest('미확정 구간을 확인하세요.')
+            if without_auto >= samples or (without_auto == samples - 1 and (score is not None or (label not in manual and label not in unresolved))):
                 raise BadRequest('자동 추적이 확인되지 않은 부유물의 종료 위치를 지정하세요.')
             if without_auto < samples - 1 and not unit(score):
                 raise BadRequest('부유물 12개의 추적 결과를 확인하세요.')
         case_id, payload = generate_input(row, {k: point(p) for k, p in ends.items()}, end, samples,
-                                          quality, manual, missing if 'missing_frames' in body else None)
+                                          quality, manual, missing if 'missing_frames' in body else None, unresolved)
         payload['source_revision'] = revision
         outcome = db('rpc/wf_register_tracked_case', data=dict(p_media=str(key), p_revision=revision,
                      p_case=case_id, p_payload=payload), prefer='return=representation')

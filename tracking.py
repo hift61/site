@@ -36,12 +36,12 @@ def transform(corners, length, width):
     return to_mm
 
 
-def generate_input(media, ends, capture_end, sequences, quality, manual, missing=None):
+def generate_input(media, ends, capture_end, sequences, quality, manual, missing=None, unresolved=()):
     evaluation = media['evaluation']
     settings = evaluation.get('tracking')
     if not settings:
         raise ValueError('진동원 위치와 수조 크기, 종료 시각을 먼저 저장하세요.')
-    if set(ends) != OBJECTS or set(evaluation['objects']) != OBJECTS:
+    if set(ends) != OBJECTS.difference(unresolved) or set(evaluation['objects']) != OBJECTS:
         raise ValueError('부유물 12개의 시작점과 종료점이 필요합니다.')
     meta = media['measurement_summary'] or {}
     if not meta.get('case_id'):
@@ -63,7 +63,7 @@ def generate_input(media, ends, capture_end, sequences, quality, manual, missing
         return (x, y)
     source = position(settings['target'])
     results = {}
-    for label in sorted(OBJECTS):
+    for label in sorted(ends):
         initial = dist(position(evaluation['objects'][label]), source)
         final = dist(position(ends[label]), source)
         speed = (initial-final)/duration
@@ -84,4 +84,6 @@ def generate_input(media, ends, capture_end, sequences, quality, manual, missing
     }
     if missing is not None:
         payload['tracking']['missing_frames'] = missing
+    if unresolved:
+        payload['tracking']['unresolved'] = sorted(unresolved)
     return meta['case_id'], payload
