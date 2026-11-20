@@ -1,0 +1,31 @@
+body { max-width: 1140px; }
+[hidden] { display: none !important; }
+#tabs { display: flex; flex-wrap: wrap; gap: .4rem; }
+#tabs button, .secondary { color: #176359; background: #e8f2ee; }
+#tabs [aria-current="page"] { color: white; background: #176359; }
+button:disabled { opacity: .48; cursor: default; }
+.media-line { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+.media-line h2 { margin: .15rem auto .15rem 0; }
+.media-message { margin: .5rem 0; color: #854500; }
+.media-message:empty { display: none; }
+#media-list { margin: .4rem 0; padding: 0; list-style: none; }
+#media-list li { border-top: 1px solid #d3e3dd; }
+.media-row { display: flex; flex-wrap: wrap; width: 100%; justify-content: space-between; margin: 0; padding: .7rem .4rem; color: inherit; background: white; text-align: left; gap: .35rem; overflow-wrap: anywhere; }
+.media-row:hover, .media-row:focus-visible { background: #edf5f2; }
+.media-row small, #evaluation-status, #frame-label { color: #40675d; }
+#media-progress { width: min(20rem, 100%); accent-color: #176359; }
+#media-stage { position: relative; display: grid; width: 100%; margin: .65rem auto; background: #162925; }
+#media-view, #media-overlay { grid-area: 1 / 1; }
+#media-view > * { display: block; width: 100%; height: auto; }
+#media-overlay { display: block; width: 100%; height: 100%; position: absolute; inset: 0; pointer-events: none; }
+#media-overlay.marking { pointer-events: auto; cursor: crosshair; touch-action: manipulation; }
+#mark-tools { padding: .7rem 0; }
+#mark-tools button[aria-pressed="true"] { outline: 3px solid #56a89b; outline-offset: 1px; }
+#float-markers { display: flex; flex-wrap: wrap; }
+#float-markers button { min-width: 42px; font-size: .84rem; margin: 3px; }
+#float-markers button[data-marked="false"] { background: #e8f2ee; color: #176359; }
+#mark-help { margin: .45rem .25rem; }
+#tracking-controls { margin: .8rem 0 0; padding-top: .8rem; border-top: 1px solid #d3e3dd; }
+#tracking-controls h3 { margin: 0 0 .4rem; }
+#tracking-controls input { width: 7rem; }
+#track-progress { width: min(18rem, 100%); accent-color: #176359; }

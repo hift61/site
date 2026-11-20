@@ -1,0 +1,13 @@
+﻿case_id,object_id,object_type,f_hz,wave_duty,mod_fixed,variable_control,energy_complete,E_total_Wh,initial_distance_mm,signed_convergence_speed_mm_s
+,A1,A,,,0.4,false,,,,
+,A2,A,,,0.4,false,,,,
+,A3,A,,,0.4,false,,,,
+,A4,A,,,0.4,false,,,,
+,A5,A,,,0.4,false,,,,
+,A6,A,,,0.4,false,,,,
+,B1,B,,,0.4,false,,,,
+,B2,B,,,0.4,false,,,,
+,B3,B,,,0.4,false,,,,
+,B4,B,,,0.4,false,,,,
+,B5,B,,,0.4,false,,,,
+,B6,B,,,0.4,false,,,,
