@@ -1,6 +1,8 @@
 import os, json, hmac, urllib.request, urllib.error
+import csv
+import io
 from uuid import uuid4
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from werkzeug.exceptions import HTTPException
 from model import LAYOUT, parse_csv, generate
 from media import media_routes, video_storage
@@ -60,6 +62,39 @@ def upload():
     rows=parse_csv(request.get_data(as_text=True))
     db('wf_cases',data=rows)
     return jsonify(count=len(rows)),201
+
+@app.get('/api/cases/export.<format>')
+def export_cases(format):
+    if format not in ('csv', 'json'):
+        return jsonify(error='CSV 또는 JSON 형식을 선택하세요.'),400
+    rows=listing('wf_cases','id,payload')
+    if format == 'json':
+        content=json.dumps({'cases': rows},ensure_ascii=False,allow_nan=False,indent=2)
+        mime='application/json'
+    else:
+        output=io.StringIO(newline='')
+        writer=csv.writer(output)
+        writer.writerow([
+            'case_id','object_id','object_type','f_hz','wave_duty','mod_fixed',
+            'variable_control','energy_complete','E_total_Wh',
+            'initial_distance_mm','signed_convergence_speed_mm_s'
+        ])
+        for row in rows:
+            payload=row['payload']
+            layout,frequency,wave,modulation=payload['condition']
+            energy=payload['energy']
+            for object_id,(distance,speed) in sorted(payload['objects'].items()):
+                object_type=object_id[0] if layout == LAYOUT else layout
+                writer.writerow([
+                    row['id'],object_id,object_type,frequency,wave,modulation,
+                    'false',str(energy is not None).lower(),
+                    '' if energy is None else energy,distance,speed
+                ])
+        content='\ufeff'+output.getvalue()
+        mime='text/csv'
+    return Response(content,mimetype=mime,headers={
+        'Content-Disposition': f'attachment; filename="waterful_measured_cases.{format}"'
+    })
 
 @app.post('/api/runs')
 def run():
