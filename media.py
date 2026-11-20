@@ -374,11 +374,15 @@ def media_routes(db):
         samples = body.get('samples')
         ends = body.get('ends')
         quality = body.get('min_score')
-        if (not unit(end, 86400) or type(samples) is not int or not isinstance(ends, dict)
+        manual = body.get('manual_frames', {})
+        if (not unit(end, 86400) or type(samples) is not int or not 3 <= samples <= 5000
+                or not isinstance(ends, dict) or not isinstance(manual, dict) or not set(manual) <= LABELS
                 or not isinstance(quality, dict) or set(ends) != LABELS or set(quality) != LABELS
-                or not all(unit(v) for v in quality.values())):
+                or any(type(count) is not int or not 1 <= count < samples for count in manual.values())
+                or not all(value is None if manual.get(label) == samples - 1 else unit(value)
+                           for label, value in quality.items())):
             raise BadRequest('부유물 12개의 추적 결과를 확인하세요.')
-        case_id, payload = generate_input(row, {k: point(p) for k, p in ends.items()}, end, samples, quality)
+        case_id, payload = generate_input(row, {k: point(p) for k, p in ends.items()}, end, samples, quality, manual)
         payload['source_revision'] = revision
         outcome = db('rpc/wf_register_tracked_case', data=dict(p_media=str(key), p_revision=revision,
                      p_case=case_id, p_payload=payload), prefer='return=representation')

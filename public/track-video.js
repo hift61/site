@@ -78,29 +78,75 @@
         throw Error(label + ' 주변에 추적할 공간이 부족합니다.');
       }
       try {
-        return {label, center, velocity: [0, 0], template: template(pixels, width, center, radius), minimum: 1};
+        return {label, center, velocity: [0, 0], template: template(pixels, width, center, radius), minimum: null, manualFrames: 0};
       } catch (error) {
         throw Error(label + ' — ' + error.message);
       }
     });
   }
 
-  function advance(pixels, width, height, tracks, corners, search, seconds) {
+  async function advance(pixels, width, height, tracks, corners, search, seconds, correct) {
     const candidates = tracks.map(t => match(pixels, width, height, t, search));
-    const abort = label => { throw Error(label + '를 ' + seconds.toFixed(2) + '초에서 구분하지 못했습니다. 시작점을 확인하거나 분석 구간을 줄여주세요.'); };
-    const overlap = (i, j) => distance(candidates[i].center, candidates[j].center) <
+    const corrections = new Map();
+    const overlaps = (i, center, j) => distance(center, candidates[j].center) <
       Math.max(4, Math.min(tracks[i].template.radius, tracks[j].template.radius) * 0.7);
+
     for (let i = 0; i < tracks.length; i++) {
-      const result = candidates[i];
+      if (corrections.has(i)) continue;
+      const track = tracks[i], result = candidates[i];
       const [x, y] = result.center;
-      if (result.score < minScore || result.ambiguity || !contained([x / width, y / height], corners)
-          || candidates.some((_, j) => i !== j && overlap(i, j))) abort(tracks[i].label);
+      let reason = '';
+      if (!contained([x / width, y / height], corners)) reason = '자동으로 잡은 점이 수조 밖에 있습니다.';
+      else if (result.ambiguity) reason = '영상에서 비슷한 위치가 여러 곳입니다.';
+      else if (result.score < minScore) reason = '이전 프레임의 모습과 충분히 일치하지 않습니다.';
+      else if (candidates.some((_, j) => i !== j && overlaps(i, result.center, j))) {
+        reason = '다른 부유물과 위치가 겹칩니다.';
+      }
+      if (!reason) continue;
+      while (true) {
+        const point = await correct({label: track.label, seconds, reason});
+        const center = [Math.round(point[0] * width), Math.round(point[1] * height)];
+        const [px, py] = center;
+        if (!contained(point, corners) || !contained([px / width, py / height], corners)) {
+          reason = '수조 안에 있는 조각 중심을 클릭하세요.';
+          continue;
+        }
+        if ([...corrections.keys()].some(j => overlaps(i, center, j))) {
+          reason = '이미 보정한 다른 조각과 너무 가깝습니다. 각 조각의 중심을 확인하세요.';
+          continue;
+        }
+        const radius = Math.min(track.template.radius, px, py, width - 1 - px, height - 1 - py);
+        if (radius < 4) {
+          reason = '영상 가장자리에서 조금 안쪽에 있는 조각 중심을 클릭하세요.';
+          continue;
+        }
+        let updatedTemplate;
+        try {
+          updatedTemplate = template(pixels, width, center, radius);
+        } catch {
+          reason = '선택한 점 주변의 무늬가 너무 약합니다. 조각의 무늬가 보이는 부분을 클릭하세요.';
+          continue;
+        }
+        candidates[i] = {center};
+        corrections.set(i, updatedTemplate);
+        break;
+      }
+      // A later manual pick may conflict with an earlier automatic pick on this frame.
+      if (candidates.slice(0, i).some(({center}, j) => !corrections.has(j) && overlaps(i, center, j))) {
+        i = -1;
+      }
     }
     for (let i = 0; i < tracks.length; i++) {
       const t = tracks[i], result = candidates[i];
-      t.velocity = result.center.map((n, axis) => (n - t.center[axis]) * 0.65 + t.velocity[axis] * 0.35);
+      if (corrections.has(i)) {
+        t.template = corrections.get(i);
+        t.velocity = [0, 0];
+        t.manualFrames++;
+      } else {
+        t.velocity = result.center.map((n, axis) => (n - t.center[axis]) * 0.65 + t.velocity[axis] * 0.35);
+        t.minimum = Math.min(t.minimum ?? 1, result.score);
+      }
       t.center = result.center;
-      t.minimum = Math.min(t.minimum, result.score);
     }
   }
 
@@ -127,7 +173,7 @@
     });
   }
 
-  async function trackVideo({url, stream = false, start, end, seeds, corners, patch, signal, progress}) {
+  async function trackVideo({url, stream = false, start, end, seeds, corners, patch, signal, progress, correct}) {
     const ownsUrl = !stream && !url.startsWith('blob:');
     let objectUrl = url;
     if (ownsUrl) {
@@ -169,13 +215,14 @@
       const search = Math.max(14, Math.min(24, patch * 2));
       for (let i = 1; i <= steps; i++) {
         const seconds = start + (end - start) * (i / steps);
-        advance(await read(seconds), width, height, tracks, corners, search, seconds);
+        await advance(await read(seconds), width, height, tracks, corners, search, seconds, correct);
         if (i % 4 === 0 || i === steps) progress(i, steps);
       }
       return {
         end_seconds: end, samples: steps + 1,
         ends: Object.fromEntries(tracks.map(({label, center: [x, y]}) => [label, [x / width, y / height]])),
-        min_score: Object.fromEntries(tracks.map(({label, minimum}) => [label, minimum]))
+        min_score: Object.fromEntries(tracks.map(({label, minimum}) => [label, minimum])),
+        manual_frames: Object.fromEntries(tracks.filter(t => t.manualFrames).map(t => [t.label, t.manualFrames]))
       };
     } finally {
       video.removeAttribute('src');

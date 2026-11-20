@@ -36,7 +36,7 @@ def transform(corners, length, width):
     return to_mm
 
 
-def generate_input(media, ends, capture_end, sequences, quality):
+def generate_input(media, ends, capture_end, sequences, quality, manual):
     evaluation = media['evaluation']
     settings = evaluation.get('tracking')
     if not settings:
@@ -52,7 +52,7 @@ def generate_input(media, ends, capture_end, sequences, quality):
     duration = capture_end - start
     if not 0.2 <= duration or abs(capture_end - settings['end_seconds']) > 0.001:
         raise ValueError('영상의 분석 종료 시각을 확인하세요.')
-    if not 3 <= sequences <= 5000 or min(quality.values(), default=0) < MIN_SCORE:
+    if not 3 <= sequences <= 5000 or any(score is not None and score < MIN_SCORE for score in quality.values()):
         raise ValueError('신뢰할 수 있는 추적 결과가 부족합니다.')
     length, width = settings['tank_mm']
     convert = transform(evaluation['corners'], length, width)
@@ -76,7 +76,8 @@ def generate_input(media, ends, capture_end, sequences, quality):
         'objects': results, 'source_media_id': str(media['id']),
         'tracking': {
             'method': TRACKING_METHOD, 'start_seconds': start, 'end_seconds': capture_end,
-            'samples': sequences, 'min_score': quality, 'ends': ends, 'tank_mm': [length, width],
+            'samples': sequences, 'min_score': quality, 'manual_frames': manual,
+            'ends': ends, 'tank_mm': [length, width],
             'target': settings['target'], 'energy_drive_duration_s': meta.get('drive_duration_s')
         }
     }

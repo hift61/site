@@ -52,6 +52,11 @@
 </div>
 </div>
 <p id="evaluation-message" class="media-message" role="status"></p>
+<div id="track-correction" hidden>
+<p id="track-correction-help" role="status"></p>
+<button type="button" id="track-correct-continue">이 위치로 추적 계속</button>
+<button type="button" id="track-correct-cancel" class="secondary">추적 취소</button>
+</div>
 <div id="media-stage"><div id="media-view"></div><svg id="media-overlay" aria-hidden="true"></svg></div>
 <div class="media-line" id="frame-actions" hidden>
 <button type="button" id="lock-frame">이 프레임 지정</button>
@@ -100,4 +105,4 @@ action('run',async()=>{const r=await api('runs',{method:'POST',headers:{'Content
 action('download',async()=>{const id=el('runs').value;if(!id)throw Error('저장된 분석이 없습니다.');const data=await api('runs/'+id);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='synthetic-'+id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);return '결과를 다운로드했습니다.'});
 </script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="/drive.js"></script><script src="/track-video.js"></script><script src="/media.js"></script></html>
+<script src="/drive.js"></script><script src="/track-video.js?v=9"></script><script src="/media.js?v=9"></script></html>

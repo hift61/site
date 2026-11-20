@@ -398,7 +398,7 @@
     el('evaluation-editor').hidden = false;
     el('media-view').replaceChildren();
     el('media-overlay').replaceChildren();
-    for (const name of ['mark-tools', 'frame-actions', 'evaluation-save', 'tracking-controls', 'track-result']) el(name).hidden = true;
+    for (const name of ['mark-tools', 'frame-actions', 'evaluation-save', 'tracking-controls', 'track-result', 'track-correction']) el(name).hidden = true;
     say('track-message');
     el('evaluation-case-file').value = '';
     say('evaluation-title', '항목 불러오는 중…');
@@ -423,7 +423,7 @@
       const video = item.mime_type.startsWith('video/');
       const media = document.createElement(video ? 'video' : 'img');
       const state = {
-        item, media, video, url, registered, preview: false, tracker: null,
+        item, media, video, url, registered, preview: false, tracker: null, correction: null,
         width: 0, height: 0, locked: false, ready: false,
         seconds: null, marks: freshMarks(), mode: 'objects', selected: 'A1', history: [], dirty: false
       };
@@ -505,10 +505,15 @@
 
   function place(event) {
     const state = session;
-    if (!state?.locked || state.media.seeking || saveCount || state.preview) return;
+    if (!state?.locked || state.media.seeking || (saveCount && !state.correction) || state.preview) return;
     const rect = el('media-overlay').getBoundingClientRect();
     const clamp = value => Math.min(1, Math.max(0, value));
     const p = [clamp((event.clientX - rect.left) / rect.width), clamp((event.clientY - rect.top) / rect.height)];
+    if (state.correction) {
+      state.correction.point = p;
+      render();
+      return;
+    }
     if (state.mode === 'target') {
       changeMarks(s => { s.marks.target = p; });
       return;
@@ -574,7 +579,7 @@
   function draw(s) {
     const overlay = el('media-overlay');
     overlay.replaceChildren();
-    overlay.classList.toggle('marking', !!(s?.locked && !s.media.seeking && !saveCount && !s.preview));
+    overlay.classList.toggle('marking', !!(s?.locked && !s.media.seeking && (!saveCount || s.correction) && !s.preview));
     if (!s?.locked || !s.width || s.media.seeking) return;
     overlay.setAttribute('viewBox', '0 0 ' + s.width + ' ' + s.height);
     overlay.setAttribute('preserveAspectRatio', 'none');
@@ -596,6 +601,12 @@
       marker(s.registered.payload.tracking.target, '진동원', '#fff087');
       return;
     }
+    if (s.correction) {
+      const {point, label} = s.correction;
+      if (point) marker(point, label, '#fff087', true);
+      return;
+    }
+    if (s.tracker && Math.abs(s.media.currentTime - s.seconds) > 0.0005) return;
     const vertices = s.marks.corners.map(xy);
     if (vertices.length > 1) {
       graphic(vertices.length === 4 ? 'polygon' : 'polyline', {
@@ -627,14 +638,17 @@
     const s = session;
     if (!s) return;
     const locked = s.ready && s.locked;
-    el('mark-tools').hidden = !locked || s.preview;
-    el('evaluation-save').hidden = !locked || s.preview;
+    const correction = s.correction;
+    el('track-correction').hidden = !correction;
+    el('track-correct-continue').disabled = !correction?.point || s.media.seeking;
+    el('mark-tools').hidden = !locked || s.preview || !!correction;
+    el('evaluation-save').hidden = !locked || s.preview || !!correction;
     el('mark-target').hidden = !s.video;
     el('tracking-controls').hidden = !locked || !s.video;
     el('track-register').disabled = !!saveCount || s.media.seeking || s.preview;
     el('track-preview').disabled = !!saveCount || (!s.preview && s.media.seeking);
     for (const id of ['tank-length', 'tank-width', 'track-end', 'track-patch']) el(id).disabled = !!saveCount || s.preview;
-    el('frame-actions').hidden = !s.video || !s.ready;
+    el('frame-actions').hidden = !s.video || !s.ready || !!correction;
     el('lock-frame').hidden = locked;
     el('lock-frame').disabled = s.media.seeking;
     el('reset-frame').hidden = !locked;
@@ -727,7 +741,8 @@
       const row = body.insertRow();
       for (const cell of [label, values[0].toFixed(2), values[1].toFixed(3)]) row.insertCell().textContent = cell;
     }
-    say('track-message', id + ' · 생성기에 등록된 실측값' +
+    const manualCount = Object.values(payload.tracking.manual_frames ?? {}).reduce((a, b) => a + b, 0);
+    say('track-message', id + ' · 생성기에 등록된 실측값' + (manualCount ? ' · 수동 보정 ' + manualCount + '회' : '') +
       (payload.energy === null ? ' · 에너지 미확정' : ' · 구동 전체 에너지 ' + payload.energy + ' Wh'));
   }
 
@@ -739,6 +754,36 @@
     s.media.currentTime = s.preview ? end : s.seconds;
     say('track-preview', s.preview ? '기준 프레임으로 돌아가기' : '등록한 종료 위치 보기');
     render();
+  }
+
+  function requestCorrection(s, signal, {label, seconds, reason}) {
+    return new Promise((resolve, reject) => {
+      const abort = () => finish(null, Error('추적을 취소했습니다.'));
+      const fail = () => finish(null, Error('보정할 영상 프레임을 열지 못했습니다.'));
+      const finish = (point, error) => {
+        signal.removeEventListener('abort', abort);
+        s.media.removeEventListener('error', fail);
+        if (error) reject(error);
+        else resolve(point);
+      };
+      if (signal.aborted) return abort();
+      const needsSeek = Math.abs(s.media.currentTime - seconds) > 0.0005;
+      s.correction = {label, point: null, finish};
+      signal.addEventListener('abort', abort, {once: true});
+      s.media.addEventListener('error', fail, {once: true});
+      if (needsSeek) {
+        try {
+          s.media.currentTime = seconds;
+        } catch {
+          fail();
+          return;
+        }
+      }
+      say('track-message', '보정 대기 중');
+      say('track-correction-help', seconds.toFixed(3) + '초 · ' + label + '의 중심을 클릭하세요. ' + reason);
+      render();
+      if (needsSeek) el('track-correction').scrollIntoView({block: 'start'});
+    });
   }
 
   async function runTracking() {
@@ -768,6 +813,7 @@
       const result = await window.waterfulTrackVideo({url: s.url, stream: s.item.storage_backend === 'r2',
         start: s.seconds, end: settings.end_seconds,
         seeds: s.marks.objects, corners: s.marks.corners, patch: Number(el('track-patch').value), signal: controller.signal,
+        correct: failure => requestCorrection(s, controller.signal, failure),
         progress: (done, total) => {
           progress.value = Math.round(100 * done / total);
           say('track-message', '부유물 12개 추적 중 · ' + progress.value + '%');
@@ -783,6 +829,10 @@
     } finally {
       cancel.hidden = progress.hidden = true;
       s.tracker = null;
+      s.correction = null;
+      if (!s.media.error && Math.abs(s.media.currentTime - s.seconds) > 0.0005) {
+        s.media.currentTime = s.seconds;
+      }
       saveCount--;
       render();
     }
@@ -817,6 +867,16 @@
   el('attach-case-button').onclick = attachCase;
   el('track-register').onclick = runTracking;
   el('track-cancel').onclick = () => session?.tracker?.abort();
+  el('track-correct-cancel').onclick = el('track-cancel').onclick;
+  el('track-correct-continue').onclick = () => {
+    const s = session;
+    if (!s?.correction?.point || s.media.seeking) return;
+    const {point, finish} = s.correction;
+    s.correction = null;
+    say('track-message', '보정한 위치에서 추적을 이어가는 중…');
+    render();
+    finish(point);
+  };
   el('track-preview').onclick = previewTracking;
   el('media-refresh').onclick = () => list().catch(() => {});
   el('media-prev').onclick = () => { if (page) page--; list().catch(() => {}); };
