@@ -127,11 +127,16 @@
     });
   }
 
-  async function trackVideo({url, start, end, seeds, corners, patch, signal, progress}) {
-    const response = await fetch(url, {signal});
-    if (!response.ok) throw Error('영상을 읽지 못했습니다. 항목을 다시 열어주세요.');
-    const objectUrl = URL.createObjectURL(await response.blob());
+  async function trackVideo({url, stream = false, start, end, seeds, corners, patch, signal, progress}) {
+    const ownsUrl = !stream && !url.startsWith('blob:');
+    let objectUrl = url;
+    if (ownsUrl) {
+      const response = await fetch(url, {signal});
+      if (!response.ok) throw Error('영상을 읽지 못했습니다. 항목을 다시 열어주세요.');
+      objectUrl = URL.createObjectURL(await response.blob());
+    }
     const video = document.createElement('video');
+    if (stream) video.crossOrigin = 'anonymous';
     video.muted = true;
     video.preload = 'auto';
     video.playsInline = true;
@@ -175,7 +180,7 @@
     } finally {
       video.removeAttribute('src');
       video.load();
-      URL.revokeObjectURL(objectUrl);
+      if (ownsUrl) URL.revokeObjectURL(objectUrl);
     }
   }
   window.waterfulTrackVideo = trackVideo;

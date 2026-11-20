@@ -13,7 +13,16 @@ button:disabled { opacity: .48; cursor: default; }
 .media-row { display: flex; flex-wrap: wrap; width: 100%; justify-content: space-between; margin: 0; padding: .7rem .4rem; color: inherit; background: white; text-align: left; gap: .35rem; overflow-wrap: anywhere; }
 .media-row:hover, .media-row:focus-visible { background: #edf5f2; }
 .media-row small, #evaluation-status, #frame-label { color: #40675d; }
-#media-progress { width: min(20rem, 100%); accent-color: #176359; }
+#media-size-label { color: #40675d; margin: .4rem 0; }
+#upload-queue { list-style: none; padding: 0; margin: .6rem 0; }
+.queued-media { border-top: 1px solid #d3e3dd; padding: .65rem 0; }
+.queued-media strong { margin-right: auto; overflow-wrap: anywhere; }
+.queued-media label { display: flex; flex-direction: column; align-items: start; }
+.queued-media input { width: min(100%, 19rem); }
+.queued-media progress { width: min(20rem, 100%); accent-color: #176359; }
+.queued-media[data-status="done"] .media-message { color: #176359; }
+#drive-import { border-top: 1px solid #d3e3dd; margin-top: 1rem; padding-top: .5rem; }
+#drive-folder { width: min(32rem, 100%); }
 #media-stage { position: relative; display: grid; width: 100%; margin: .65rem auto; background: #162925; }
 #media-view, #media-overlay { grid-area: 1 / 1; }
 #media-view > * { display: block; width: 100%; height: auto; }

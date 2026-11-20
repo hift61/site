@@ -12,16 +12,23 @@
 <section>
 <h2>수조 영상·사진 업로드</h2>
 <form id="media-upload-form">
-<div><label for="media-file">영상 또는 사진 · 최대 50 MB</label>
-<input id="media-file" type="file" accept=".mp4,.mov,.webm,.jpg,.jpeg,.png,.webp" required></div>
-<div><label for="measurement-file">같은 회차의 measurements.csv</label>
-<input id="measurement-file" type="file" accept=".csv"></div>
-<div><label for="case-file">case.json · 선택, 파도 듀티와 구동 시간 확인</label>
-<input id="case-file" type="file" accept=".json"></div>
-<button id="media-upload" type="submit">업로드</button>
+<div><label for="media-file">영상·사진 추가</label>
+<input id="media-file" type="file" accept=".mp4,.mov,.webm,.jpg,.jpeg,.png,.webp" multiple aria-describedby="media-size-label"></div>
+<p id="media-size-label"></p>
+<ul id="upload-queue" aria-label="업로드할 실험"></ul>
+<button id="media-upload" type="submit" disabled>일괄 업로드</button>
 </form>
-<progress id="media-progress" max="100" hidden></progress>
 <p id="upload-message" class="media-message" role="status"></p>
+<div id="drive-import" hidden>
+<h3>Google Drive에서 가져오기</h3>
+<form id="drive-import-form">
+<label for="drive-folder">실험 폴더 또는 실험 모음 폴더 링크</label>
+<input id="drive-folder" type="url" placeholder="https://drive.google.com/drive/folders/…" required>
+<button type="submit" id="drive-import-button">가져오기</button>
+</form>
+<p id="drive-import-message" class="media-message" role="status"></p>
+<ul id="drive-import-errors"></ul>
+</div>
 </section>
 <section class="upload-list">
 <div class="media-line"><h2>업로드 목록</h2><button id="media-refresh" type="button" class="secondary">새로고침</button></div>
@@ -92,4 +99,5 @@ action('upload',async()=>{const f=el('file').files[0];if(!f)throw Error('CSV를 
 action('run',async()=>{const r=await api('runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count:el('count').value,seed:el('seed').value})});await refresh();el('runs').value=r.id;return r.count+'개 생성 · 반복 부족 조건 '+r.skipped+'개 제외'});
 action('download',async()=>{const id=el('runs').value;if(!id)throw Error('저장된 분석이 없습니다.');const data=await api('runs/'+id);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='synthetic-'+id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);return '결과를 다운로드했습니다.'});
 </script>
-<script src="/track-video.js"></script><script src="/media.js"></script></html>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="/drive.js"></script><script src="/track-video.js"></script><script src="/media.js"></script></html>

@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://waterful-two.vercel.app"],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedHeaders": ["Content-Type", "If-None-Match", "Range"],
+    "ExposeHeaders": ["Accept-Ranges", "Content-Range", "ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

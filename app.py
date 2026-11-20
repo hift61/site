@@ -3,7 +3,7 @@ from uuid import uuid4
 from flask import Flask, request, jsonify
 from werkzeug.exceptions import HTTPException
 from model import LAYOUT, parse_csv, generate
-from media import media_routes
+from media import media_routes, video_storage
 
 app=Flask(__name__)
 app.config['MAX_CONTENT_LENGTH']=2_000_000
@@ -46,7 +46,8 @@ def fail(e):
 
 @app.get('/api/session')
 def session():
-    return jsonify(connected=True)
+    return jsonify(connected=True, video_storage=video_storage(),
+                   google_drive_client_id=os.environ.get('GOOGLE_DRIVE_CLIENT_ID', '').strip())
 
 @app.get('/api/state')
 def state():

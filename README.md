@@ -9,14 +9,42 @@ Supabase 프로젝트 SQL Editor에서 schema.sql을 실행하고 Vercel 프로�
 
 ## 영상 업로드 및 평가
 
-1. 기존 Supabase 프로젝트의 SQL Editor에서 `media_setup.sql`을 한 번 실행합니다. 영상 목록 테이블과 비공개 Storage 버킷을 준비합니다. 이미 이전 버전의 SQL을 실행했다면 이번 파일을 다시 실행해 측정 CSV 저장 열을 추가하세요. 기존 CSV 분석용 `schema.sql`은 신규 프로젝트에서만 별도로 실행합니다.
+1. 기존 Supabase 프로젝트의 SQL Editor에서 `media_setup.sql`을 한 번 실행합니다. 영상 목록 테이블과 비공개 Storage 버킷을 준비합니다. 이미 이전 버전의 SQL을 실행했다면 이번 파일을 다시 실행해 영상 저장소 설정을 추가하세요. 기존 CSV 분석용 `schema.sql`은 신규 프로젝트에서만 별도로 실행합니다.
 2. 수정한 파일을 기존 Vercel 프로젝트에 연결된 저장소의 배포 브랜치에 커밋합니다. 기존 환경변수 세 개를 사용합니다. 이전 패키지의 `api/index.py`나 경로 재작성 설정이 남아 있다면 제거합니다.
-3. 웹앱의 **업로드** 탭에서 영상과 같은 케이스의 `measurements.csv`를 함께 선택합니다. 사진에 측정 CSV를 추가하는 것은 선택입니다. 같은 폴더의 `case.json`을 첨부하면 케이스 ID, 구동 조건과 구동 시간을 가져옵니다. 항목이 목록에 나타나면 눌러 **평가** 탭을 엽니다. 파일당 최대 50 MB입니다. 긴 영상은 평가에 필요한 구간만 잘라서 올립니다. 재생 호환성이 필요한 영상에는 H.264 MP4를 권장합니다.
+3. **업로드** 탭에서 영상·사진을 여러 개 선택하고 각 항목에 같은 회차의 `measurements.csv`와 선택 사항인 `case.json`을 붙입니다. 사진의 측정 CSV는 선택 사항입니다. **일괄 업로드**를 누르면 순서대로 전송합니다. 성공한 항목은 실험 목록에 표시되며 실패한 항목은 재시도할 수 있습니다. R2 연결 시 새 영상은 최대 2 GB까지 R2에 저장됩니다. Supabase에 남아 있는 영상도 계속 열 수 있습니다. 재생에는 H.264 MP4를 권장합니다.
 4. 영상은 평가할 시점에서 **이 프레임 지정**을 누릅니다. 사진은 곧바로 지정할 수 있습니다. **A 지정**과 **B 지정**을 누르면 해당 그룹의 미지정 번호부터 진행합니다. 이미 지정한 번호를 누르면 해당 위치를 다시 찍을 수 있습니다.
 5. **수조 지정**에서 왼쪽 위부터 시계 방향으로 꼭짓점 네 개를 표시합니다. **왼쪽 끝 휨**, **오른쪽 끝 휨**에서 각각 시작점·중간점·끝점을 찍습니다. 앱은 세 점을 지나는 곡선을 그려 직선 기준과의 차이를 표시합니다. 휘어 보이는 부분이 없는 쪽은 생략할 수 있습니다.
 6. **임시 저장** 또는 **평가 완료**를 누릅니다. 같은 항목을 다시 열면 기준 프레임의 시각과 표시 좌표가 복원됩니다. 이 화면에서 표시하는 값은 수동 평가용이며, 렌즈 보정이나 부유물 자동 추적을 적용하지 않습니다.
 
 평가 화면에서 연결된 원본 측정 CSV를 내려받을 수 있습니다. `case.json`에서 구동 구간을 확인하고 해당 구간의 측정값이 유효한 경우에만 소비 에너지(Wh)를 표시합니다. 이 값은 MDD10A 전원선 전체의 에너지입니다.
+
+## 팀 영상 저장소 연결
+
+1. Cloudflare Dashboard의 **R2 Object Storage**에서 **Standard** 버킷을 만듭니다. 예시 이름은 `waterful-videos`입니다. 비공개 상태로 둡니다.
+2. 버킷 **Settings → CORS Policy**에 ZIP의 `r2_cors.json` 내용을 붙여넣습니다. 기존 사이트 `https://waterful-two.vercel.app`에서 쓰는 설정입니다. 주소가 달라졌다면 `AllowedOrigins`에 팀원이 접속하는 정확한 사이트 주소를 넣으세요.
+3. R2의 **Manage API Tokens**에서 이 버킷만 선택하고 **Object Read & Write** 권한으로 토큰을 만듭니다. Vercel의 **waterful → Settings → Environment Variables**에서 Production에 아래 값을 넣습니다.
+
+| 환경변수 | 값 |
+| --- | --- |
+| `R2_ACCOUNT_ID` | Cloudflare Account ID |
+| `R2_BUCKET` | 만든 버킷 이름 |
+| `R2_ACCESS_KEY_ID` | R2 토큰을 만들 때 발급되는 Access Key ID |
+| `R2_SECRET_ACCESS_KEY` | R2 토큰을 만들 때 발급되는 Secret Access Key |
+
+4. Supabase에서 최신 `media_setup.sql`을 실행한 뒤 이 버전을 배포합니다. 로그인 후 업로드 화면에 **공유 영상 저장소 연결됨**이 표시되면 R2 설정이 감지된 상태입니다. 영상을 한 건 올려 목록에서 재생해 확인합니다.
+
+영상 원본은 R2에 저장되고 실험 정보, 측정 CSV, 평가 결과는 Supabase에서 관리합니다. 기존 Supabase 영상도 이전과 같이 열 수 있습니다. 웹앱은 팀 암호를 확인한 후 만료 시간이 있는 영상 주소를 발급합니다.
+
+## Google Drive에서 실험 가져오기
+
+Google Drive를 원본 영상 저장소로 쓸 수 있습니다. Drive에 팀 폴더를 만들고 팀원 Google 계정에 보기 권한을 부여합니다. 상위 팀 폴더 아래에 실험별 폴더를 하나씩 만들고 각 실험 폴더에 GoPro 영상 1개, `measurements.csv`, 가능하면 `case.json`을 넣습니다.
+
+1. Google Cloud에서 프로젝트를 만들고 **Google Drive API**를 사용 설정합니다.
+2. **Google Auth Platform**에서 OAuth 동의 화면을 설정합니다. 소규모 팀이라면 **External · Testing**을 사용하고 실제 팀원 Google 계정을 테스트 사용자 목록에 추가합니다. Drive 읽기 범위는 `https://www.googleapis.com/auth/drive.readonly`입니다.
+3. **웹 애플리케이션** OAuth 클라이언트를 만들고 **Authorized JavaScript origins**에 `https://waterful-two.vercel.app`을 추가합니다. Vercel `waterful`의 Production 환경변수 `GOOGLE_DRIVE_CLIENT_ID`에 클라이언트 ID를 넣습니다.
+4. 기존 Supabase에서 최신 `media_setup.sql`을 실행하고 GitHub에 변경 파일을 올려 배포합니다. **Google Drive에서 가져오기**에 상위 팀 폴더나 실험 하나의 폴더 링크를 붙여넣습니다. 팀원이 목록에서 Drive 영상을 열면 본인 Google 계정의 공유 권한으로 읽습니다.
+
+영상은 Drive에 남고 웹앱에서 다시 복사하거나 업로드할 필요가 없습니다. 영상을 처음 열 때 파일을 브라우저로 읽어 재생합니다. 실험 정보, 측정 CSV, 평가 결과는 Supabase에 저장합니다. Drive 원본 영상의 내용을 바꾸면 기존 표시가 맞지 않을 수 있으니 분석할 원본은 그대로 두세요.
 
 ## 자동 추적 후 생성기에 등록
 

@@ -3,7 +3,8 @@
   const corners = ['왼쪽 위', '오른쪽 위', '오른쪽 아래', '왼쪽 아래'];
   const walls = {left: '왼쪽', right: '오른쪽'};
   const statuses = {uploaded: '평가 대기', draft: '작성 중', evaluated: '평가 완료'};
-  const maxBytes = 50_000_000;
+  let maxVideoBytes = 1_000_000_000;
+  const maxPhotoBytes = 50_000_000;
   const maxCsvBytes = 1_000_000;
   const maxCaseBytes = 65_536;
   let page = 0;
@@ -11,7 +12,9 @@
   let detailVersion = 0;
   let session = null;
   let saveCount = 0;
-  let pendingFinish = null;
+  const uploadQueue = [];
+  let uploadingBatch = false;
+  let openRequest = null;
 
   const post = (method, data) => ({
     method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
@@ -47,9 +50,10 @@
         const details = document.createElement('small');
         const measurement = item.measurement_summary;
         const linked = measurement?.case_id || (measurement ? '측정 CSV 연결됨' : '측정 CSV 없음');
-        details.textContent = [statuses[item.status], linked, new Date(item.created_at).toLocaleString('ko-KR')].join(' · ');
+        details.textContent = [statuses[item.status], linked, item.storage_backend === 'drive' ? 'Drive' : null,
+          new Date(item.created_at).toLocaleString('ko-KR')].filter(Boolean).join(' · ');
         button.append(name, details);
-        button.addEventListener('click', () => open(item.id));
+        button.addEventListener('click', () => openFromList(item));
         li.append(button);
         return li;
       });
@@ -66,77 +70,242 @@
     }
   }
 
-  function sendFile(url, file, mime) {
+  async function openFromList(item) {
+    if (saveCount) return;
+    try {
+      if (item.storage_backend === 'drive') await window.waterfulDrive.connect();
+      await open(item.id);
+    } catch (error) {
+      say('media-list-message', error.message);
+    }
+  }
+
+  function sendFile(url, blob, filename, progress, rawMime = null) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', url);
       xhr.upload.onprogress = event => {
-        if (event.lengthComputable) el('media-progress').value = 100 * event.loaded / event.total;
+        if (event.lengthComputable) progress(event.loaded / event.total);
       };
-      xhr.timeout = 300_000;
+      xhr.timeout = rawMime ? 1_800_000 : 300_000;
       xhr.onerror = xhr.ontimeout = xhr.onabort = () => reject(Error('파일 전송이 중단되었습니다. 다시 시도하세요.'));
       xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else reject(Error('파일을 전송하지 못했습니다 (HTTP ' + xhr.status + '). Storage의 파일 크기 제한을 확인하세요.'));
+        if ((xhr.status >= 200 && xhr.status < 300) || (rawMime && xhr.status === 412)) resolve();
+        else if (xhr.status === 413) reject(Error('저장소에서 크기 또는 사용량 제한으로 전송을 거절했습니다.'));
+        else if (rawMime && xhr.status === 403) reject(Error('R2에 영상을 저장할 권한이 없습니다. 버킷 토큰과 설정을 확인하세요.'));
+        else reject(Error('파일을 전송하지 못했습니다 (HTTP ' + xhr.status + ').'));
       };
+      if (rawMime) {
+        xhr.setRequestHeader('Content-Type', rawMime);
+        xhr.setRequestHeader('If-None-Match', '*');
+        xhr.send(blob);
+        return;
+      }
       const form = new FormData();
       form.append('cacheControl', '3600');
-      form.append('', file.slice(0, file.size, mime), file.name);
+      form.append('', blob, filename);
       xhr.send(form);
     });
   }
 
+  async function sendParts(pending, progress) {
+    const {file, setup} = pending;
+    const count = Math.ceil(file.size / setup.part_size);
+    while (pending.next < count) {
+      const index = pending.next;
+      const start = index * setup.part_size;
+      const blob = file.slice(start, Math.min(start + setup.part_size, file.size), 'application/octet-stream');
+      const report = fraction => progress((start + blob.size * fraction) / file.size);
+      report(0);
+      pending.message.textContent = '영상 전송 중 · ' + (index + 1) + ' / ' + count;
+      const part = await api('media/' + setup.id + '/upload-part/' + index, {method: 'POST'});
+      if (!part.stored) await sendFile(part.upload_url, blob, 'part-' + index, report);
+      pending.next++;
+      report(1);
+    }
+  }
+
+  function updateUploadControls() {
+    const active = uploadQueue.filter(item => item.state !== 'done');
+    el('media-file').disabled = uploadingBatch;
+    el('media-upload').disabled = uploadingBatch || active.length === 0;
+    say('media-upload', active.length && active.every(item => item.state === 'failed') ? '실패한 파일 다시 올리기' : '일괄 업로드');
+    for (const item of uploadQueue) {
+      const canEdit = !uploadingBatch && !item.attempt && item.state !== 'done';
+      item.measurement.disabled = item.caseFile.disabled = !canEdit;
+      item.remove.disabled = uploadingBatch;
+    }
+  }
+
+  function attachmentControl(text, accept) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    label.append(text, input);
+    return {label, input};
+  }
+
+  function addUploads() {
+    const picker = el('media-file');
+    if (uploadingBatch) return;
+    for (const file of picker.files) {
+      const isVideo = /\.(mp4|mov|webm)$/i.test(file.name);
+      const row = document.createElement('li');
+      row.className = 'queued-media';
+      row.dataset.status = 'queued';
+      const header = document.createElement('div');
+      header.className = 'media-line';
+      const name = document.createElement('strong');
+      name.textContent = file.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'secondary';
+      remove.textContent = '목록에서 제거';
+      remove.setAttribute('aria-label', file.name + ' 목록에서 제거');
+      header.append(name, remove);
+      const attachments = document.createElement('div');
+      attachments.className = 'media-line';
+      const measurement = attachmentControl('measurements.csv (' + (isVideo ? '필수' : '선택') + ')', '.csv');
+      const caseFile = attachmentControl('case.json (선택)', '.json');
+      attachments.append(measurement.label, caseFile.label);
+      const progress = document.createElement('progress');
+      progress.max = 100;
+      progress.hidden = true;
+      progress.setAttribute('aria-label', file.name + ' 전송 진행률');
+      const message = document.createElement('p');
+      message.className = 'media-message';
+      message.setAttribute('role', 'status');
+      row.append(header, attachments, progress, message);
+
+      const item = {file, isVideo, row, remove, attachments, progress, message, state: 'queued',
+        measurement: measurement.input, caseFile: caseFile.input, attempt: null};
+      remove.onclick = () => {
+        uploadQueue.splice(uploadQueue.indexOf(item), 1);
+        row.remove();
+        updateUploadControls();
+      };
+      uploadQueue.push(item);
+      el('upload-queue').append(row);
+    }
+    picker.value = '';
+    say('upload-message');
+    updateUploadControls();
+  }
+
+  async function uploadItem(item) {
+    const {file, isVideo, progress, message} = item;
+    const measurementFile = item.measurement.files[0];
+    const caseFile = item.caseFile.files[0];
+    if (!file.size) throw Error('빈 파일입니다.');
+    if (file.size > (isVideo ? maxVideoBytes : maxPhotoBytes)) {
+      throw Error('영상은 ' + maxVideoBytes / 1_000_000_000 + ' GB 이하, 사진은 50 MB 이하로 올려주세요.');
+    }
+    if (!measurementFile && (isVideo || caseFile)) throw Error('같은 회차의 measurements.csv를 선택하세요.');
+    if (measurementFile?.size > maxCsvBytes) throw Error('측정 CSV는 1 MB 이하여야 합니다.');
+    if (caseFile?.size > maxCaseBytes) throw Error('case.json은 64 KiB 이하여야 합니다.');
+
+    message.textContent = '업로드 중…';
+    progress.hidden = false;
+    if (!item.attempt) {
+      const measurement = measurementFile ? {name: measurementFile.name, csv: await measurementFile.text()} : null;
+      const caseJson = caseFile ? await caseFile.text() : null;
+      const setup = await api('media/upload', post('POST', {
+        name: file.name, size_bytes: file.size, measurement, case_json: caseJson
+      }));
+      item.attempt = {file, setup, next: 0, message};
+    }
+
+    const attempt = item.attempt;
+    const {setup} = attempt;
+    const report = fraction => { progress.value = fraction * 100; };
+    if (setup.backend === 'r2' && attempt.next === 0) {
+      const {upload_url} = await api('media/' + setup.id + '/upload-url', {method: 'POST'});
+      await sendFile(upload_url, file, file.name, report, setup.mime_type);
+      attempt.next = 1;
+    } else if (setup.part_size) {
+      await sendParts(attempt, report);
+    } else if (attempt.next === 0) {
+      await sendFile(setup.upload_url, file.slice(0, file.size, setup.mime_type), file.name, report);
+      attempt.next = 1;
+    }
+    await api('media/' + setup.id + '/finish', {method: 'POST'});
+  }
+
   async function upload(event) {
     event.preventDefault();
-    const file = el('media-file').files[0];
-    const measurementFile = el('measurement-file').files[0];
-    const caseFile = el('case-file').files[0];
-    if (!file) return;
-    if (file.size > maxBytes) {
-      say('upload-message', '파일은 50 MB 이하여야 합니다. 영상은 평가할 구간만 잘라 올려주세요.');
-      return;
-    }
-    if (!measurementFile && (/\.(mp4|mov|webm)$/i.test(file.name) || caseFile)) {
-      say('upload-message', '같은 회차의 measurements.csv를 선택하세요.');
-      return;
-    }
-    if (measurementFile && measurementFile.size > maxCsvBytes) {
-      say('upload-message', '측정 CSV는 1 MB 이하여야 합니다.');
-      return;
-    }
-    if (caseFile && caseFile.size > maxCaseBytes) {
-      say('upload-message', 'case.json은 64 KiB 이하여야 합니다.');
-      return;
-    }
-    const progress = el('media-progress');
-    const button = el('media-upload');
-    button.disabled = true;
-    progress.value = 0;
-    progress.hidden = false;
-    say('upload-message', '파일 업로드 중…');
+    if (uploadingBatch) return;
+    const batch = uploadQueue.filter(item => item.state !== 'done');
+    if (!batch.length) return;
+
+    uploadingBatch = true;
+    updateUploadControls();
+    let completed = 0;
     try {
-      if (pendingFinish?.file !== file || pendingFinish.measurementFile !== measurementFile || pendingFinish.caseFile !== caseFile) {
-        const measurement = measurementFile ? {name: measurementFile.name, csv: await measurementFile.text()} : null;
-        const caseJson = caseFile ? await caseFile.text() : null;
-        const setup = await api('media/upload', post('POST', {
-          name: file.name, size_bytes: file.size, measurement, case_json: caseJson
-        }));
-        await sendFile(setup.upload_url, file, setup.mime_type);
-        pendingFinish = {file, measurementFile, caseFile, id: setup.id};
+      for (const [index, item] of batch.entries()) {
+        say('upload-message', '일괄 업로드 중 · ' + (index + 1) + ' / ' + batch.length);
+        item.state = item.row.dataset.status = 'uploading';
+        try {
+          await uploadItem(item);
+          item.state = item.row.dataset.status = 'done';
+          item.message.textContent = '업로드 완료';
+          item.attachments.hidden = true;
+          item.remove.textContent = '대기 목록에서 숨기기';
+          item.remove.setAttribute('aria-label', item.file.name + ' 대기 목록에서 숨기기');
+          item.file = item.attempt = null;
+          item.measurement.value = item.caseFile.value = '';
+          completed++;
+          page = 0;
+          void list().catch(() => {});
+        } catch (error) {
+          item.state = item.row.dataset.status = 'failed';
+          item.message.textContent = error.message;
+        } finally {
+          item.progress.hidden = true;
+        }
       }
-      await api('media/' + pendingFinish.id + '/finish', {method: 'POST'});
-      pendingFinish = null;
-      el('media-file').value = '';
-      el('measurement-file').value = '';
-      el('case-file').value = '';
-      say('upload-message', '업로드 완료. 목록에서 항목을 열어 평가할 수 있습니다.');
+      const failed = batch.length - completed;
+      say('upload-message', completed + '개 완료' + (failed ? ' · ' + failed + '개 실패' : ''));
+    } finally {
+      uploadingBatch = false;
+      updateUploadControls();
+    }
+  }
+
+  async function importDrive(event) {
+    event.preventDefault();
+    const button = el('drive-import-button');
+    if (button.disabled) return;
+    button.disabled = true;
+    const errors = el('drive-import-errors');
+    errors.replaceChildren();
+    say('drive-import-message', 'Google Drive 연결 중…');
+    try {
+      const drive = window.waterfulDrive;
+      await drive.connect();
+      const folders = await drive.getFolders(el('drive-folder').value.trim());
+      let added = 0, reused = 0, failed = 0;
+      for (const [index, folder] of folders.entries()) {
+        say('drive-import-message', '실험 가져오는 중 · ' + (index + 1) + ' / ' + folders.length);
+        try {
+          const data = await drive.readCase(folder);
+          const result = await api('media/import-drive', post('POST', data));
+          if (result.already_registered) reused++;
+          else added++;
+        } catch (error) {
+          failed++;
+          const li = document.createElement('li');
+          li.textContent = folder.name + ' · ' + error.message;
+          errors.append(li);
+        }
+      }
+      say('drive-import-message', added + '개 등록 · ' + reused + '개 이미 등록됨 · ' + failed + '개 실패');
       page = 0;
       await list().catch(() => {});
     } catch (error) {
-      say('upload-message', error.message);
+      say('drive-import-message', error.message);
     } finally {
       button.disabled = false;
-      progress.hidden = true;
     }
   }
 
@@ -198,11 +367,31 @@
     }
   }
 
+  async function joinParts(parts, item, signal) {
+    const buffers = [];
+    let received = 0;
+    for (const part of parts) {
+      const response = await fetch(part.url, {signal});
+      if (!response.ok) throw Error('영상 일부를 받지 못했습니다. 목록에서 다시 열어주세요.');
+      const blob = await response.blob();
+      if (blob.size !== part.size) throw Error('받은 영상 조각의 크기가 일치하지 않습니다.');
+      buffers.push(blob);
+      received += blob.size;
+      say('evaluation-message', '영상 불러오는 중 · ' + Math.round(100 * received / item.size_bytes) + '%');
+    }
+    if (received !== item.size_bytes) throw Error('받은 영상의 크기가 일치하지 않습니다.');
+    return URL.createObjectURL(new Blob(buffers, {type: item.mime_type}));
+  }
+
   async function open(id) {
     if (saveCount) return;
     if (session?.dirty && !window.confirm('저장하지 않은 표시가 있습니다. 다른 항목을 열까요?')) return;
     const version = ++detailVersion;
+    openRequest?.abort();
+    const controller = new AbortController();
+    openRequest = controller;
     session?.media?.pause?.();
+    if (session?.url?.startsWith('blob:')) URL.revokeObjectURL(session.url);
     session = null;
     await go('evaluation');
     el('evaluation-empty').hidden = true;
@@ -217,8 +406,20 @@
     say('evaluation-message');
     el('evaluation-measurements').hidden = true;
     try {
-      const {item, media_url: url, registered} = await api('media/' + id);
+      const {item, media_url, media_parts, registered} = await api('media/' + id, {signal: controller.signal});
       if (version !== detailVersion) return;
+      say('evaluation-title', item.name);
+      let url = media_url;
+      if (media_parts || item.storage_backend === 'drive') {
+        say('evaluation-message', item.storage_backend === 'drive' ? 'Drive 영상 불러오는 중…' : '영상 불러오는 중…');
+        url = media_parts ? await joinParts(media_parts, item, controller.signal)
+          : await window.waterfulDrive.openVideo(item, controller.signal);
+        if (version !== detailVersion) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        say('evaluation-message');
+      }
       const video = item.mime_type.startsWith('video/');
       const media = document.createElement(video ? 'video' : 'img');
       const state = {
@@ -275,6 +476,8 @@
       media.src = url;
     } catch (error) {
       if (version === detailVersion) say('evaluation-message', error.message);
+    } finally {
+      if (openRequest === controller) openRequest = null;
     }
   }
 
@@ -562,7 +765,8 @@
     try {
       await storeEvaluation(s, true, settings);
       say('track-message', '영상 불러오는 중…');
-      const result = await window.waterfulTrackVideo({url: s.url, start: s.seconds, end: settings.end_seconds,
+      const result = await window.waterfulTrackVideo({url: s.url, stream: s.item.storage_backend === 'r2',
+        start: s.seconds, end: settings.end_seconds,
         seeds: s.marks.objects, corners: s.marks.corners, patch: Number(el('track-patch').value), signal: controller.signal,
         progress: (done, total) => {
           progress.value = Math.round(100 * done / total);
@@ -596,12 +800,19 @@
     el(button).onclick = () => setMode(mode);
   }
   action('connect', async () => {
-    await api('session');
+    const {video_storage, google_drive_client_id} = await api('session');
+    window.waterfulDrive.configure(google_drive_client_id);
+    el('drive-import').hidden = !google_drive_client_id;
+    if (video_storage) maxVideoBytes = video_storage.limit_bytes;
+    const location = video_storage?.backend === 'r2' ? '공유 영상 저장소 연결됨' : 'Supabase에 영상 저장';
+    say('media-size-label', '영상 최대 ' + maxVideoBytes / 1_000_000_000 + ' GB · 사진 최대 50 MB · ' + location);
     el('tabs').hidden = false;
     await go('uploads').catch(() => {});
     return '연결했습니다.';
   });
   el('media-upload-form').onsubmit = upload;
+  el('media-file').onchange = addUploads;
+  el('drive-import-form').onsubmit = importDrive;
   el('measurement-download').onclick = downloadMeasurement;
   el('attach-case-button').onclick = attachCase;
   el('track-register').onclick = runTracking;
