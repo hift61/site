@@ -36,7 +36,7 @@ def transform(corners, length, width):
     return to_mm
 
 
-def generate_input(media, ends, capture_end, sequences, quality, manual):
+def generate_input(media, ends, capture_end, sequences, quality, manual, missing=None):
     evaluation = media['evaluation']
     settings = evaluation.get('tracking')
     if not settings:
@@ -75,10 +75,13 @@ def generate_input(media, ends, capture_end, sequences, quality, manual):
         'energy': meta['energy_wh'] if meta['energy_complete'] else None,
         'objects': results, 'source_media_id': str(media['id']),
         'tracking': {
-            'method': TRACKING_METHOD, 'start_seconds': start, 'end_seconds': capture_end,
+            'method': TRACKING_METHOD if missing is None else 'template-track-planar-v2',
+            'start_seconds': start, 'end_seconds': capture_end,
             'samples': sequences, 'min_score': quality, 'manual_frames': manual,
             'ends': ends, 'tank_mm': [length, width],
             'target': settings['target'], 'energy_drive_duration_s': meta.get('drive_duration_s')
         }
     }
+    if missing is not None:
+        payload['tracking']['missing_frames'] = missing
     return meta['case_id'], payload

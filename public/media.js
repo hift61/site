@@ -510,7 +510,19 @@
     const clamp = value => Math.min(1, Math.max(0, value));
     const p = [clamp((event.clientX - rect.left) / rect.width), clamp((event.clientY - rect.top) / rect.height)];
     if (state.correction) {
-      state.correction.point = p;
+      const correction = state.correction;
+      const corners = state.marks.corners;
+      const inside = corners.every(([ax, ay], i) => {
+        const [bx, by] = corners[(i + 1) % corners.length];
+        return (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax) >= -1e-8;
+      });
+      if (!inside) {
+        correction.message = '수조 안에 있는 조각의 중심을 클릭하세요.';
+      } else {
+        correction.manual[correction.selected] = p;
+        correction.selected = correction.missing.find(label => !Object.hasOwn(correction.manual, label)) ?? correction.selected;
+        correction.message = '';
+      }
       render();
       return;
     }
@@ -602,8 +614,10 @@
       return;
     }
     if (s.correction) {
-      const {point, label} = s.correction;
-      if (point) marker(point, label, '#fff087', true);
+      const {automatic, manual, selected} = s.correction;
+      for (const [label, point] of Object.entries({...automatic, ...manual})) {
+        marker(point, label, Object.hasOwn(manual, label) ? '#fff087' : rgb[label[0]], label === selected);
+      }
       return;
     }
     if (s.tracker && Math.abs(s.media.currentTime - s.seconds) > 0.0005) return;
@@ -640,7 +654,19 @@
     const locked = s.ready && s.locked;
     const correction = s.correction;
     el('track-correction').hidden = !correction;
-    el('track-correct-continue').disabled = !correction?.point || s.media.seeking;
+    if (correction) {
+      const pending = correction.missing.filter(label => !Object.hasOwn(correction.manual, label));
+      el('track-correct-continue').disabled = pending.length > 0 || s.media.seeking;
+      for (const button of el('track-end-markers').children) {
+        const label = button.dataset.label;
+        button.textContent = pending.includes(label) ? label + ' · 확인 필요' : label;
+        button.classList.toggle('secondary', !pending.includes(label));
+        button.setAttribute('aria-pressed', String(correction.selected === label));
+      }
+      say('track-correction-help', correction.seconds.toFixed(3) + '초 · 종료 프레임 · ' +
+        (correction.message || (pending.length ? '남은 조각 ' + pending.length + '개. ' + correction.selected +
+          '의 중심을 클릭하세요.' : '표시를 확인한 뒤 생성기에 등록하세요. 번호를 누르면 위치를 다시 찍을 수 있습니다.')));
+    }
     el('mark-tools').hidden = !locked || s.preview || !!correction;
     el('evaluation-save').hidden = !locked || s.preview || !!correction;
     el('mark-target').hidden = !s.video;
@@ -742,7 +768,7 @@
       for (const cell of [label, values[0].toFixed(2), values[1].toFixed(3)]) row.insertCell().textContent = cell;
     }
     const manualCount = Object.values(payload.tracking.manual_frames ?? {}).reduce((a, b) => a + b, 0);
-    say('track-message', id + ' · 생성기에 등록된 실측값' + (manualCount ? ' · 수동 보정 ' + manualCount + '회' : '') +
+    say('track-message', id + ' · 생성기에 등록된 실측값' + (manualCount ? ' · 수동 표시 ' + manualCount + '건' : '') +
       (payload.energy === null ? ' · 에너지 미확정' : ' · 구동 전체 에너지 ' + payload.energy + ' Wh'));
   }
 
@@ -756,19 +782,19 @@
     render();
   }
 
-  function requestCorrection(s, signal, {label, seconds, reason}) {
+  function reviewEndpoints(s, signal, {seconds, missing, ends}) {
     return new Promise((resolve, reject) => {
       const abort = () => finish(null, Error('추적을 취소했습니다.'));
       const fail = () => finish(null, Error('보정할 영상 프레임을 열지 못했습니다.'));
-      const finish = (point, error) => {
+      const finish = (positions, error) => {
         signal.removeEventListener('abort', abort);
         s.media.removeEventListener('error', fail);
         if (error) reject(error);
-        else resolve(point);
+        else resolve(positions);
       };
       if (signal.aborted) return abort();
       const needsSeek = Math.abs(s.media.currentTime - seconds) > 0.0005;
-      s.correction = {label, point: null, finish};
+      s.correction = {seconds, missing, automatic: ends, manual: {}, selected: missing[0], message: '', finish};
       signal.addEventListener('abort', abort, {once: true});
       s.media.addEventListener('error', fail, {once: true});
       if (needsSeek) {
@@ -779,10 +805,9 @@
           return;
         }
       }
-      say('track-message', '보정 대기 중');
-      say('track-correction-help', seconds.toFixed(3) + '초 · ' + label + '의 중심을 클릭하세요. ' + reason);
+      say('track-message', '자동 분석 완료 · 종료 위치 확인 대기');
       render();
-      if (needsSeek) el('track-correction').scrollIntoView({block: 'start'});
+      el('track-correction').scrollIntoView({block: 'start'});
     });
   }
 
@@ -813,7 +838,7 @@
       const result = await window.waterfulTrackVideo({url: s.url, stream: s.item.storage_backend === 'r2',
         start: s.seconds, end: settings.end_seconds,
         seeds: s.marks.objects, corners: s.marks.corners, patch: Number(el('track-patch').value), signal: controller.signal,
-        correct: failure => requestCorrection(s, controller.signal, failure),
+        reviewEnds: review => reviewEndpoints(s, controller.signal, review),
         progress: (done, total) => {
           progress.value = Math.round(100 * done / total);
           say('track-message', '부유물 12개 추적 중 · ' + progress.value + '%');
@@ -845,6 +870,14 @@
     button.dataset.label = label;
     button.onclick = () => setMode('objects', label);
     el('float-markers').append(button);
+    const endButton = button.cloneNode();
+    endButton.onclick = () => {
+      if (!session?.correction) return;
+      session.correction.selected = label;
+      session.correction.message = '';
+      render();
+    };
+    el('track-end-markers').append(endButton);
   }
   for (const [button, mode] of [['mark-tank', 'tank'], ['mark-left', 'left'], ['mark-right', 'right'], ['mark-target', 'target']]) {
     el(button).onclick = () => setMode(mode);
@@ -870,12 +903,23 @@
   el('track-correct-cancel').onclick = el('track-cancel').onclick;
   el('track-correct-continue').onclick = () => {
     const s = session;
-    if (!s?.correction?.point || s.media.seeking) return;
-    const {point, finish} = s.correction;
+    if (!s?.correction || s.media.seeking) return;
+    const {automatic, manual, missing, finish} = s.correction;
+    if (missing.some(label => !Object.hasOwn(manual, label))) return;
+    const positions = Object.entries({...automatic, ...manual});
+    const scale = Math.min(1, 800 / Math.max(s.width, s.height));
+    for (const [i, [label, [x, y]]] of positions.entries()) {
+      const overlap = positions.slice(i + 1).find(([, [ox, oy]]) =>
+        Math.hypot((x - ox) * s.width, (y - oy) * s.height) * scale < 3);
+      if (overlap) {
+        s.correction.message = label + '와 ' + overlap[0] + '의 점이 겹칩니다. 두 조각의 중심을 각각 확인하세요.';
+        render();
+        return;
+      }
+    }
     s.correction = null;
-    say('track-message', '보정한 위치에서 추적을 이어가는 중…');
     render();
-    finish(point);
+    finish(manual);
   };
   el('track-preview').onclick = previewTracking;
   el('media-refresh').onclick = () => list().catch(() => {});

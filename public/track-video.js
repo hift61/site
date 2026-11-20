@@ -1,6 +1,7 @@
 /* Seeded template matching, running on the browser's decoded frames. */
 (() => {
   const minScore = 0.78;
+  const shortGap = 2;
   const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const contained = ([x, y], corners) => corners.every(([ax, ay], i) => {
     const [bx, by] = corners[(i + 1) % corners.length];
@@ -40,20 +41,23 @@
       const variance = squared - sum * sum / offsets.length;
       return variance > 4 * offsets.length ? Math.min(1, dot / (norm * Math.sqrt(variance))) : -1;
     };
-    const [x, y] = state.center;
+    const [x, y] = state.pending ?? state.center;
     const [dx, dy] = state.velocity;
-    const cx = Math.round(x + dx), cy = Math.round(y + dy);
+    const ahead = state.pending ? 0 : Math.min(state.gap + 1, 3);
+    const cx = Math.round(x + dx * ahead), cy = Math.round(y + dy * ahead);
     const rank = (x0, y0, score) => score - 0.035 * Math.hypot(x0 - cx, y0 - cy) / search;
     let best = {center: [x, y], score: -1, rank: -2};
     const coarse = [];
-    const check = (px, py) => {
-      const raw = score(px, py), ranked = rank(px, py, raw);
-      const candidate = {center: [px, py], score: raw, rank: ranked};
-      if (ranked > best.rank) best = candidate;
-      return candidate;
+    const check = (px, py, includeForAmbiguity = false) => {
+      const raw = score(px, py);
+      if (raw < best.rank && (!includeForAmbiguity || raw < minScore)) return;
+      const ranked = rank(px, py, raw);
+      if (ranked > best.rank) best = {center: [px, py], score: raw, rank: ranked};
+      if (includeForAmbiguity && raw >= minScore) coarse.push({center: [px, py], rank: ranked});
     };
-    for (let y0 = cy - search; y0 <= cy + search; y0 += 2) {
-      for (let x0 = cx - search; x0 <= cx + search; x0 += 2) coarse.push(check(x0, y0));
+    const stride = state.gap || search <= 21 ? 1 : 2;
+    for (let y0 = cy - search; y0 <= cy + search; y0 += stride) {
+      for (let x0 = cx - search; x0 <= cx + search; x0 += stride) check(x0, y0, true);
     }
     for (let j = -5; j <= 5; j++) {
       for (let i = -5; i <= 5; i++) check(cx + i, cy + j);
@@ -62,8 +66,8 @@
     for (let j = -2; j <= 2; j++) {
       for (let i = -2; i <= 2; i++) check(bx + i, by + j);
     }
-    const ambiguity = coarse.some(c => distance(c.center, best.center) > Math.max(6, radius * 0.8)
-      && c.score >= 0.91 && c.rank >= best.rank - 0.025);
+    const ambiguity = coarse.some(c => c.rank >= best.rank - 0.035 &&
+      distance(c.center, best.center) > Math.max(6, radius * 0.8));
     return {...best, ambiguity};
   }
 
@@ -73,80 +77,70 @@
     return coordinates.map(([label, center]) => {
       const [x, y] = center;
       const closest = Math.min(...coordinates.filter(row => row[0] !== label).map(row => distance(center, row[1])));
-      const radius = Math.min(patch, Math.floor(closest / 2) - 1);
-      if (radius < 4 || x < radius || x >= width - radius || y < radius || y >= height - radius) {
-        throw Error(label + ' 주변에 추적할 공간이 부족합니다.');
+      const limit = Math.min(Math.floor((closest - 1) / 2), x, y, width - 1 - x, height - 1 - y);
+      let appearance = null;
+      for (const radius of new Set([Math.min(patch, limit), Math.min(18, limit), 4])) {
+        if (radius < 4 || radius > limit) continue;
+        try {
+          appearance = template(pixels, width, center, radius);
+          break;
+        } catch {
+          // Try sampling the outline if the region around the center has little texture.
+        }
       }
-      try {
-        return {label, center, velocity: [0, 0], template: template(pixels, width, center, radius), minimum: null, manualFrames: 0};
-      } catch (error) {
-        throw Error(label + ' — ' + error.message);
-      }
+      return {label, center, velocity: [0, 0], template: appearance, minimum: null,
+        gap: 0, missed: 0, found: false, pending: null};
     });
   }
 
-  async function advance(pixels, width, height, tracks, corners, search, seconds, correct) {
-    const candidates = tracks.map(t => match(pixels, width, height, t, search));
-    const corrections = new Map();
-    const overlaps = (i, center, j) => distance(center, candidates[j].center) <
-      Math.max(4, Math.min(tracks[i].template.radius, tracks[j].template.radius) * 0.7);
+  function updateAppearance(current, pixels, width, center) {
+    const sample = template(pixels, width, center, current.radius);
+    const centered = current.centered.map((value, i) => value * 0.85 + sample.centered[i] * 0.15);
+    const norm = Math.hypot(...centered);
+    if (norm >= 8 * Math.sqrt(centered.length)) return {...current, centered, norm};
+    return current;
+  }
 
-    for (let i = 0; i < tracks.length; i++) {
-      if (corrections.has(i)) continue;
-      const track = tracks[i], result = candidates[i];
-      const [x, y] = result.center;
-      let reason = '';
-      if (!contained([x / width, y / height], corners)) reason = '자동으로 잡은 점이 수조 밖에 있습니다.';
-      else if (result.ambiguity) reason = '영상에서 비슷한 위치가 여러 곳입니다.';
-      else if (result.score < minScore) reason = '이전 프레임의 모습과 충분히 일치하지 않습니다.';
-      else if (candidates.some((_, j) => i !== j && overlaps(i, result.center, j))) {
-        reason = '다른 부유물과 위치가 겹칩니다.';
+  function advance(pixels, width, height, tracks, corners, search, isLast) {
+    const matches = tracks.map(track => {
+      if (!track.template || (track.gap >= 8 && !track.pending && !isLast && track.gap % 4 !== 0)) return null;
+      const window = track.pending ? search : Math.min(72, search + track.gap * 5);
+      const candidate = match(pixels, width, height, track, window);
+      const [x, y] = candidate.center;
+      const threshold = track.gap > shortGap ? 0.89 : track.gap ? 0.84 : minScore;
+      return candidate.score >= threshold && !candidate.ambiguity && contained([x / width, y / height], corners)
+        ? candidate : null;
+    });
+    const uninterrupted = tracks.map(track => track.gap === 0);
+    for (const [i, track] of tracks.entries()) {
+      const match = matches[i];
+      const conflict = match && matches.some((other, j) => other && i !== j &&
+        (!uninterrupted[i] || uninterrupted[j]) &&
+        distance(match.center, other.center) < Math.max(4, Math.min(track.template.radius, tracks[j].template.radius) * 0.7));
+      const viable = match && !conflict;
+      const recovering = track.gap > shortGap;
+      const confirmed = !recovering || (track.pending && viable && distance(track.pending, match.center) <= search);
+      track.found = Boolean(viable && confirmed);
+      if (!track.found) {
+        track.pending = viable ? match.center : null;
+        track.gap++;
+        track.missed++;
+        continue;
       }
-      if (!reason) continue;
-      while (true) {
-        const point = await correct({label: track.label, seconds, reason});
-        const center = [Math.round(point[0] * width), Math.round(point[1] * height)];
-        const [px, py] = center;
-        if (!contained(point, corners) || !contained([px / width, py / height], corners)) {
-          reason = '수조 안에 있는 조각 중심을 클릭하세요.';
-          continue;
-        }
-        if ([...corrections.keys()].some(j => overlaps(i, center, j))) {
-          reason = '이미 보정한 다른 조각과 너무 가깝습니다. 각 조각의 중심을 확인하세요.';
-          continue;
-        }
-        const radius = Math.min(track.template.radius, px, py, width - 1 - px, height - 1 - py);
-        if (radius < 4) {
-          reason = '영상 가장자리에서 조금 안쪽에 있는 조각 중심을 클릭하세요.';
-          continue;
-        }
-        let updatedTemplate;
+      track.pending = null;
+      const elapsed = track.gap + 1;
+      track.velocity = match.center.map((n, axis) =>
+        ((n - track.center[axis]) / elapsed) * 0.65 + track.velocity[axis] * 0.35);
+      if (!track.gap && match.score >= 0.92) {
         try {
-          updatedTemplate = template(pixels, width, center, radius);
+          track.template = updateAppearance(track.template, pixels, width, match.center);
         } catch {
-          reason = '선택한 점 주변의 무늬가 너무 약합니다. 조각의 무늬가 보이는 부분을 클릭하세요.';
-          continue;
+          // Keep the previous appearance if the current image has insufficient contrast.
         }
-        candidates[i] = {center};
-        corrections.set(i, updatedTemplate);
-        break;
       }
-      // A later manual pick may conflict with an earlier automatic pick on this frame.
-      if (candidates.slice(0, i).some(({center}, j) => !corrections.has(j) && overlaps(i, center, j))) {
-        i = -1;
-      }
-    }
-    for (let i = 0; i < tracks.length; i++) {
-      const t = tracks[i], result = candidates[i];
-      if (corrections.has(i)) {
-        t.template = corrections.get(i);
-        t.velocity = [0, 0];
-        t.manualFrames++;
-      } else {
-        t.velocity = result.center.map((n, axis) => (n - t.center[axis]) * 0.65 + t.velocity[axis] * 0.35);
-        t.minimum = Math.min(t.minimum ?? 1, result.score);
-      }
-      t.center = result.center;
+      track.center = match.center;
+      track.minimum = Math.min(track.minimum ?? 1, match.score);
+      track.gap = 0;
     }
   }
 
@@ -173,7 +167,7 @@
     });
   }
 
-  async function trackVideo({url, stream = false, start, end, seeds, corners, patch, signal, progress, correct}) {
+  async function trackVideo({url, stream = false, start, end, seeds, corners, patch, signal, progress, reviewEnds}) {
     const ownsUrl = !stream && !url.startsWith('blob:');
     let objectUrl = url;
     if (ownsUrl) {
@@ -214,15 +208,32 @@
       const steps = Math.max(2, Math.ceil((end - start) * 8));
       const search = Math.max(14, Math.min(24, patch * 2));
       for (let i = 1; i <= steps; i++) {
+        if (tracks.every(t => !t.template)) {
+          for (const track of tracks) track.missed += steps - i + 1;
+          progress(steps, steps);
+          break;
+        }
         const seconds = start + (end - start) * (i / steps);
-        await advance(await read(seconds), width, height, tracks, corners, search, seconds, correct);
+        advance(await read(seconds), width, height, tracks, corners, search, i === steps);
         if (i % 4 === 0 || i === steps) progress(i, steps);
       }
+      const ends = Object.fromEntries(tracks.filter(t => t.found).map(({label, center: [x, y]}) => [label, [x / width, y / height]]));
+      const missing = tracks.filter(t => !t.found).map(t => t.label);
+      const manual = missing.length ? await reviewEnds({seconds: end, missing, ends}) : {};
+      const missingFrames = tracks.map(t => {
+        const marked = Object.hasOwn(manual, t.label);
+        const missed = t.missed - (marked && !t.found ? 1 : 0);
+        return [t.label, missed];
+      }).filter(([, n]) => n > 0);
       return {
         end_seconds: end, samples: steps + 1,
-        ends: Object.fromEntries(tracks.map(({label, center: [x, y]}) => [label, [x / width, y / height]])),
-        min_score: Object.fromEntries(tracks.map(({label, minimum}) => [label, minimum])),
-        manual_frames: Object.fromEntries(tracks.filter(t => t.manualFrames).map(t => [t.label, t.manualFrames]))
+        ends: {...ends, ...manual},
+        min_score: Object.fromEntries(tracks.map(t => {
+          const replacedOnlyMatch = t.found && t.missed === steps - 1 && Object.hasOwn(manual, t.label);
+          return [t.label, replacedOnlyMatch ? null : t.minimum];
+        })),
+        manual_frames: Object.fromEntries(Object.keys(manual).map(label => [label, 1])),
+        missing_frames: Object.fromEntries(missingFrames)
       };
     } finally {
       video.removeAttribute('src');
