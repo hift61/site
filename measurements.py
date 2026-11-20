@@ -18,6 +18,12 @@ def finite(value):
     return number
 
 
+def sensor_value(value):
+    if value.strip().lower() in ('', 'nan', '+nan', '-nan'):
+        return None
+    return finite(value)
+
+
 def timestamp(value):
     parsed = datetime.fromisoformat(value)
     if parsed.utcoffset() is None:
@@ -81,13 +87,15 @@ def measurement_log(attachment, case_text=None):
         for row in reader:
             if None in row or any(v is None for v in row.values()):
                 raise ValueError
-            t, voltage, current, power = (finite(row[k]) for k in ('pc_elapsed_s', 'V', 'I_A', 'P_W'))
+            t = finite(row['pc_elapsed_s'])
+            voltage, current, power = (sensor_value(row[k]) for k in ('V', 'I_A', 'P_W'))
             captured = timestamp(row['utc'])
-            if t < 0 or row['source'] not in ('D', 'STAT'):
+            if t < 0 or row['source'] not in ('D', 'STAT', 'STAT_missing'):
                 raise ValueError
+            if row['source'] == 'STAT_missing':
+                power = None
             for key in ('mcu_ms', 'f_hz', 'mod', 'g'):
-                if row[key]:
-                    finite(row[key])
+                sensor_value(row[key])
             samples.append((t, voltage, current, power, captured))
     except (TypeError, KeyError, ValueError, OverflowError, csv.Error) as exc:
         raise ValueError('수집 프로그램의 원본 measurements.csv 형식을 확인하세요.') from exc
@@ -101,7 +109,8 @@ def measurement_log(attachment, case_text=None):
         raise ValueError('measurements.csv와 case.json의 기록 시각이 다릅니다. 같은 케이스 폴더의 파일을 선택하세요.')
 
     def invalid(sample):
-        return sample[1] <= 0 or sample[3] < 0
+        _, voltage, current, power, _ = sample
+        return voltage is None or current is None or power is None or voltage <= 0 or power < 0
     info = {
         'file_name': name, 'samples': len(samples),
         'invalid_samples': sum(invalid(s) for s in samples),
