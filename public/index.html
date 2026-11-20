@@ -97,7 +97,11 @@
 </section>
 </div>
 <main id="analysis" hidden><section><h2>실측 케이스</h2><input type="file" id="file" accept=".csv"><button id="upload">CSV 저장</button><button id="refresh">새로고침</button><button id="export-csv">실측 CSV 다운로드</button><button id="export-json">실측 JSON 다운로드</button><p>한 실험의 A1~A6, B1~B6를 같은 케이스 ID로 입력하세요. <a href="/case_template.csv" download>12개 입력 양식</a></p><table><thead><tr><th>케이스</th><th>실험 구성</th><th>진동 Hz</th><th>파도 듀티</th><th>변조도</th><th>에너지 Wh</th></tr></thead><tbody id="cases"></tbody></table></section>
-<section><h2>가상 실험 생성</h2><label>조건당 생성 수 <input id="count" type="number" min="1" max="200" value="20"></label><label>시드 <input id="seed" type="number" value="42"></label><button id="run">생성·공유 저장</button></section>
+<section><h2>가상 실험 생성</h2>
+<label>생성 방식 <select id="generation-mode"><option value="frequency_interpolation" selected>주파수 간격별 예측</option><option value="observed">실측 조건에서만 생성</option></select></label>
+<div id="frequency-options"><label>시작 주파수(Hz) <input id="frequency-start" type="number" min="0.1" step="0.1" value="30"></label><label>끝 주파수(Hz) <input id="frequency-end" type="number" min="0.1" step="0.1" value="40"></label><label>주파수 간격(Hz) <input id="frequency-step" type="number" min="0.1" step="0.1" value="1"></label></div>
+<p id="generation-help">같은 파도 듀티·변조도의 실측 주파수 사이를 예측합니다. 범위 밖 조건은 제외됩니다. 생성 수를 늘려도 독립 실험 수가 늘지는 않습니다.</p>
+<label>조건당 생성 수 <input id="count" type="number" min="1" max="200" value="20"></label><label>시드 <input id="seed" type="number" value="42"></label><button id="run">생성·공유 저장</button></section>
 <section><h2>공유된 분석 결과</h2><select id="runs" aria-label="분석 시각"></select><button id="download">결과 JSON 다운로드</button></section></main>
 <script>
 const el=id=>document.getElementById(id);
@@ -117,7 +121,8 @@ async function exportCases(format){
 action('export-csv',()=>exportCases('csv'));
 action('export-json',()=>exportCases('json'));
 action('upload',async()=>{const f=el('file').files[0];if(!f)throw Error('CSV를 선택하세요.');const r=await api('cases',{method:'POST',body:await f.text()});await refresh();return r.count+'개 케이스 저장 완료'});
-action('run',async()=>{const r=await api('runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count:el('count').value,seed:el('seed').value})});await refresh();el('runs').value=r.id;return r.count+'개 생성 · 반복 부족 조건 '+r.skipped+'개 제외'});
+el('generation-mode').onchange=()=>{const continuous=el('generation-mode').value==='frequency_interpolation';el('frequency-options').hidden=!continuous;el('generation-help').textContent=continuous?'같은 파도 듀티·변조도의 실측 주파수 사이를 예측합니다. 범위 밖 조건은 제외됩니다. 생성 수를 늘려도 독립 실험 수가 늘지는 않습니다.':'실측 조건별로 두 회차 이상인 실험에서 표본을 생성합니다.'};
+action('run',async()=>{const r=await api('runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count:el('count').value,seed:el('seed').value,mode:el('generation-mode').value,start_hz:el('frequency-start').value,end_hz:el('frequency-end').value,step_hz:el('frequency-step').value})});await refresh();el('runs').value=r.id;return r.count+'개 생성 · 제외 조건 '+r.skipped+'개'+(r.warnings?' · 반복 1회 조건 '+r.warnings+'개 (JSON에서 확인)':'')});
 action('download',async()=>{const id=el('runs').value;if(!id)throw Error('저장된 분석이 없습니다.');const data=await api('runs/'+id);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='synthetic-'+id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);return '결과를 다운로드했습니다.'});
 </script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>

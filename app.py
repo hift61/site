@@ -4,7 +4,7 @@ import io
 from uuid import uuid4
 from flask import Flask, request, jsonify, Response
 from werkzeug.exceptions import HTTPException
-from model import LAYOUT, parse_csv, generate
+from model import LAYOUT, parse_csv, generate, generate_frequency, num
 from media import media_routes, video_storage
 
 app=Flask(__name__)
@@ -99,14 +99,24 @@ def export_cases(format):
 @app.post('/api/runs')
 def run():
     args=request.get_json()
-    n=int(args['count']);seed=int(args['seed'])
+    if not isinstance(args,dict):raise ValueError('생성 설정을 확인하세요.')
+    count_value=num(args['count']);seed_value=num(args['seed'])
+    if not count_value.is_integer() or not seed_value.is_integer():raise ValueError('생성 수와 시드는 정수로 입력하세요.')
+    n=int(count_value);seed=int(seed_value)
     if not 1<=n<=200:raise ValueError('생성 수는 조건당 1~200입니다.')
     rows=listing('wf_cases','id,payload')
-    if n*len(set(tuple(r['payload']['condition']) for r in rows if r['payload']['condition'][0] == LAYOUT))>1500:raise ValueError('생성 수를 줄여주세요 (전체 최대 1500).')
-    result=generate(rows,n,seed)
+    mode=args.get('mode','observed')
+    if mode=='frequency_interpolation':
+        result=generate_frequency(rows,n,seed,args.get('start_hz',30),args.get('end_hz',40),args.get('step_hz',1))
+    elif mode=='observed':
+        if n*len(set(tuple(r['payload']['condition']) for r in rows if r['payload']['condition'][0] == LAYOUT))>1500:raise ValueError('생성 수를 줄여주세요 (전체 최대 1500).')
+        result=generate(rows,n,seed)
+        result.update(schema_version=2,mode='observed',warnings=[])
+    else:raise ValueError('생성 방식을 확인하세요.')
     if not result['synthetic']: raise ValueError('같은 조건에서 A 6개와 B 6개를 함께 측정한 실험이 2회 이상 필요합니다.')
     key=str(uuid4()); db('wf_runs',data=dict(id=key,payload=result))
-    return jsonify(id=key,count=len(result['synthetic']),skipped=len(result['skipped'])),201
+    return jsonify(id=key,count=len(result['synthetic']),skipped=len(result['skipped']),
+                   warnings=len(result.get('warnings',[])),mode=mode),201
 
 @app.get('/api/runs/<uuid:key>')
 def get_run(key):
